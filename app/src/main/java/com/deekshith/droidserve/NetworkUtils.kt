@@ -8,17 +8,20 @@ import java.net.NetworkInterface
 object NetworkUtils {
 
     fun getLocalIpAddress(): String {
-        // Check common named interfaces first (fast path)
-        for (name in listOf("wlan0", "ap0", "rndis0", "swlan0", "eth0", "rmnet0")) {
+        // Prefer well-known LAN-facing interfaces: Wi-Fi, hotspot/AP, USB & Ethernet tether.
+        // (Cellular rmnet is intentionally excluded — its IP isn't reachable by LAN clients.)
+        for (name in listOf("wlan0", "ap0", "swlan0", "rndis0", "eth0")) {
             getIpForInterface(name)?.let { return it }
         }
-        // Enumerate all interfaces
+        // Enumerate; prefer a site-local (192.168/10/172.16) address over anything else.
         try {
-            NetworkInterface.getNetworkInterfaces()?.asSequence()
-                ?.filter { !it.isLoopback && it.isUp }
+            val candidates = NetworkInterface.getNetworkInterfaces()?.asSequence()
+                ?.filter { it.isUp && !it.isLoopback }
                 ?.flatMap { it.inetAddresses.asSequence() }
                 ?.filterIsInstance<Inet4Address>()
-                ?.firstOrNull { !it.isLoopbackAddress }
+                ?.filter { !it.isLoopbackAddress && !it.isLinkLocalAddress }
+                ?.toList().orEmpty()
+            (candidates.firstOrNull { it.isSiteLocalAddress } ?: candidates.firstOrNull())
                 ?.hostAddress?.let { return it }
         } catch (_: Exception) {}
         // UDP trick — no data actually sent
@@ -32,13 +35,29 @@ object NetworkUtils {
         return "127.0.0.1"
     }
 
+    /** Every non-loopback IPv4 address keyed by interface name — full network transparency. */
+    fun allIpv4(): List<Pair<String, String>> {
+        val out = ArrayList<Pair<String, String>>()
+        try {
+            NetworkInterface.getNetworkInterfaces()?.asSequence()
+                ?.filter { it.isUp && !it.isLoopback }
+                ?.forEach { iface ->
+                    iface.inetAddresses.asSequence()
+                        .filterIsInstance<Inet4Address>()
+                        .filter { !it.isLoopbackAddress }
+                        .forEach { addr -> addr.hostAddress?.let { out.add(iface.name to it) } }
+                }
+        } catch (_: Exception) {}
+        return out
+    }
+
     private fun getIpForInterface(name: String): String? {
         return try {
             val iface = NetworkInterface.getByName(name) ?: return null
             if (!iface.isUp || iface.isLoopback) return null
             iface.inetAddresses.asSequence()
                 .filterIsInstance<Inet4Address>()
-                .firstOrNull { !it.isLoopbackAddress }
+                .firstOrNull { !it.isLoopbackAddress && !it.isLinkLocalAddress }
                 ?.hostAddress
         } catch (_: Exception) { null }
     }

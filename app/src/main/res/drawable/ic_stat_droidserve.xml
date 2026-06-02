@@ -1,0 +1,39 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- outer signal arc -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M6,14 A6,6 0 0 0 18,14"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeWidth="1.6" />
+    <!-- inner signal arc -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M8.5,14 A3.5,3.5 0 0 0 15.5,14"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeWidth="1.6" />
+    <!-- mast -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M12,14 L12,19"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeWidth="1.6" />
+    <!-- base -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M9,19 L15,19"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeWidth="1.6" />
+    <!-- pulse dot -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,10 m-1.6,0 a1.6,1.6 0 1,0 3.2,0 a1.6,1.6 0 1,0 -3.2,0" />
+</vector>
