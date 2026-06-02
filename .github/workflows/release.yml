@@ -1,0 +1,71 @@
+# Tag-driven release.
+#
+# Push a version tag and this builds the APK and publishes a GitHub Release
+# with the binary attached:
+#
+#     git tag v1.1.0 && git push origin v1.1.0
+#
+# …or trigger it by hand from the Actions tab ("Run workflow") and type the
+# version. The release shows up under the repo's **Releases** section (not the
+# temporary Actions artifacts).
+#
+# Reusable in any single-module Gradle Android project — only the two lines
+# marked "PROJECT-SPECIFIC" below need changing for a different module/variant.
+name: Release
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to publish (e.g. v1.1.0)'
+        required: true
+
+# Needed so the workflow can create tags and releases.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      # Tag from the push event, or the manually-entered version.
+      TAG: ${{ github.event.inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APK                       # PROJECT-SPECIFIC: gradle task
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Stage APK with a release name
+        run: |
+          mkdir -p release-out
+          # PROJECT-SPECIFIC: path to the built APK
+          cp app/build/outputs/apk/debug/*.apk \
+             "release-out/${{ github.event.repository.name }}-${TAG}.apk"
+          ls -lh release-out
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ github.event.repository.name }} ${{ env.TAG }}
+          files: release-out/*.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true

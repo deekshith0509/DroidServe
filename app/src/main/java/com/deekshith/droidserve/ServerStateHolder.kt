@@ -1,10 +1,21 @@
 package com.deekshith.droidserve
 
+import android.os.SystemClock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.atomic.AtomicInteger
 
 object ServerStateHolder {
+
+    // Last time a request was served (elapsedRealtime) — used for inactivity auto-stop.
+    @Volatile
+    var lastActivityElapsed: Long = 0L
+        private set
+
+    // When the server started (elapsedRealtime) — used to show uptime.
+    @Volatile
+    var startedAtElapsed: Long = 0L
+        private set
 
     private val _isRunning    = MutableStateFlow(false)
     private val _ip           = MutableStateFlow("")
@@ -25,6 +36,9 @@ object ServerStateHolder {
         _requestCount.value = 0
         _ip.value    = ip
         _port.value  = port
+        val now = SystemClock.elapsedRealtime()
+        lastActivityElapsed = now
+        startedAtElapsed = now
         _isRunning.value = true
     }
 
@@ -35,6 +49,7 @@ object ServerStateHolder {
 
     fun incrementRequests(): Int {
         val n = counter.incrementAndGet()
+        lastActivityElapsed = SystemClock.elapsedRealtime()
         _requestCount.value = n
         return n
     }

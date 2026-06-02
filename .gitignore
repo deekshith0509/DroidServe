@@ -32,3 +32,7 @@ captures/
 
 # Mac
 .DS_Store
+
+# Local-only
+CLAUDE.md
+.claude/

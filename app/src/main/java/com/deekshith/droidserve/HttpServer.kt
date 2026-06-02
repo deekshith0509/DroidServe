@@ -6,12 +6,12 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.database.Cursor
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.*
 import android.provider.DocumentsContract
 import android.util.Base64
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import androidx.core.graphics.drawable.IconCompat
 import fi.iki.elonen.NanoHTTPD
 import kotlinx.coroutines.*
 import java.io.*
@@ -41,8 +41,10 @@ object DirectoryCache {
 
     private data class Entry(val entries: List<FileEntry>, val stamp: Long)
 
-    // LRU via LinkedHashMap
-    private val cache = object : LinkedHashMap<String, Entry>(16, 0.75f, true) {
+    // Bounded map with insertion-order eviction. accessOrder (LRU) must NOT be enabled here:
+    // accessOrder=true makes get() mutate the internal linked list, which is unsafe under the
+    // shared read lock and corrupts the map under concurrent reads.
+    private val cache = object : LinkedHashMap<String, Entry>(16, 0.75f, false) {
         override fun removeEldestEntry(eldest: Map.Entry<String, Entry>) = size > MAX_ENTRIES
     }
     private val lock = java.util.concurrent.locks.ReentrantReadWriteLock()
@@ -52,14 +54,14 @@ object DirectoryCache {
         rl.lock()
         try {
             val e = cache[docId] ?: return null
-            return if (System.currentTimeMillis() - e.stamp < TTL_MS) e.entries else null
+            return if (SystemClock.elapsedRealtime() - e.stamp < TTL_MS) e.entries else null
         } finally { rl.unlock() }
     }
 
     fun put(docId: String, entries: List<FileEntry>) {
         val wl = lock.writeLock()
         wl.lock()
-        try { cache[docId] = Entry(entries, System.currentTimeMillis()) }
+        try { cache[docId] = Entry(entries, SystemClock.elapsedRealtime()) }
         finally { wl.unlock() }
     }
 
@@ -79,13 +81,25 @@ object DirectoryCache {
 }
 
 // ============================================================================
+// ServerOptions — user-configurable server behaviour
+// ============================================================================
+data class ServerOptions(
+    val password: String? = null,
+    val username: String? = null,      // null/blank = any username accepted
+    val showHidden: Boolean = false,   // list/serve dotfiles & __system entries
+    val allowZip: Boolean = true,      // expose ?zip=1 folder downloads
+    val allowDownload: Boolean = true, // expose forced (?dl=1) file downloads
+    val title: String = "DroidServe"   // shown in the web UI header / tab
+)
+
+// ============================================================================
 // HTTP Server
 // ============================================================================
 class HttpServer(
     private val context: Context,
     private val rootUri: Uri,
     port: Int,
-    private val password: String? = null
+    private val options: ServerOptions = ServerOptions()
 ) : NanoHTTPD(port) {
 
     companion object {
@@ -96,9 +110,6 @@ class HttpServer(
         private const val QUEUE_CAPACITY = 512
         private const val KEEP_ALIVE_SEC = 30L
         private const val PIPE_BUFFER    = 2_097_152  // 2 MB pipe for ZIP streaming
-
-        // Pre-compiled range regex — avoids recompilation on every ranged request
-        private val RANGE_RE = Regex("""bytes=(\d*)-(\d*)""")
 
         // Inline MIME prefixes — precomputed set for O(1) lookup
         private val INLINE_PREFIXES = arrayOf("image/", "video/", "audio/", "text/")
@@ -114,8 +125,9 @@ class HttpServer(
         )
     }
 
-    // Pre-encoded password bytes for fast suffix comparison — avoids string allocation on hot path
-    private val passBytes: ByteArray? = password?.let { ":$it".toByteArray(Charsets.UTF_8) }
+    // Configured credential bytes (null = no auth). Compared constant-time against what's presented.
+    private val passwordBytes: ByteArray? = options.password?.takeIf { it.isNotEmpty() }?.toByteArray(Charsets.UTF_8)
+    private val usernameBytes: ByteArray? = options.username?.takeIf { it.isNotEmpty() }?.toByteArray(Charsets.UTF_8)
 
     // Cached root doc ID — computed once
     private val rootDocId: String = DocumentsContract.getTreeDocumentId(rootUri)
@@ -176,62 +188,77 @@ class HttpServer(
     // Dispatch
     // -----------------------------------------------------------------------
     override fun serve(session: IHTTPSession): Response {
-        val n  = ServerStateHolder.incrementRequests()
         val t0 = System.currentTimeMillis()
-        return try {
-            dispatch(session).also {
-                Log.d(TAG, "#$n ${session.method} ${session.uri} → ${it.status} (${System.currentTimeMillis() - t0}ms)")
-            }
+        val resp = try {
+            dispatch(session)
         } catch (e: Exception) {
             Log.e(TAG, "Unhandled error: ${session.uri}", e)
             errJson(Response.Status.INTERNAL_ERROR, "Internal error")
         }
+        val ms = System.currentTimeMillis() - t0
+        val code = resp.status.requestStatus
+        // Surface every request to the user — nothing hidden
+        ServerLog.record(session.remoteIpAddress ?: "?", session.method.name, session.uri, code, ms)
+        Log.d(TAG, "${session.remoteIpAddress} ${session.method} ${session.uri} → $code (${ms}ms)")
+        return resp
     }
 
     private fun dispatch(session: IHTTPSession): Response {
         val method = session.method
 
         if (method == Method.OPTIONS)
-            return newFixedLengthResponse(Response.Status.OK, "text/plain", "").also { cors(it) }
+            return newFixedLengthResponse(Response.Status.OK, "text/plain", "").also {
+                cors(it); it.addHeader("Access-Control-Max-Age", "86400")
+            }
 
         if (method != Method.GET && method != Method.HEAD)
             return errJson(Response.Status.METHOD_NOT_ALLOWED, "Method not allowed")
 
-        // Auth — O(1) string compare on pre-computed token
+        // Auth — constant-time compare on the configured password
         if (!checkAuth(session)) return unauthorized()
 
-        // Path decode + sanitize
-        val raw = try { java.net.URLDecoder.decode(session.uri, "UTF-8") }
-                  catch (_: Exception) { session.uri }
-        if (raw.contains("..") || raw.contains('\u0000'))
+        // Count only authenticated, servable requests (not OPTIONS / 401 / preflight probes)
+        ServerStateHolder.incrementRequests()
+
+        // NanoHTTPD already percent-decodes session.uri — decoding again double-decodes and
+        // corrupts names containing '%' or '+'.
+        val raw = session.uri
+        // Reject '..' as a path *segment* (substring matching wrongly 403s names like "a..b")
+        // and any control char. resolveFast also blocks traversal per-segment as defence in depth.
+        if (raw.any { it < ' ' } || raw.split('/').any { it == ".." })
             return errJson(Response.Status.FORBIDDEN, "Forbidden")
 
         val path   = raw.trimStart('/')
         val params = session.parameters
-        val isZip  = params["zip"]?.firstOrNull() == "1"
-        val isDl   = params["dl"]?.firstOrNull()  == "1"
-        val html   = session.headers["accept"]?.contains("text/html") != false
+        val isZip  = options.allowZip && params["zip"]?.firstOrNull() == "1"
+        val isDl   = options.allowDownload && params["dl"]?.firstOrNull() == "1"
 
         return if (path.isEmpty()) {
             // Root directory — no resolution needed
             val entries = listFast(rootDocId)
             when {
-                isZip -> zipResponse(entries, "download")
-                html  -> htmlResponse(entries, path, "root")
-                else  -> errJson(Response.Status.OK, "ok")
+                isZip                 -> zipResponse(entries, "download")
+                method == Method.HEAD -> dirHeadResponse()
+                else                  -> htmlResponse(entries, path, "root")
             }
         } else {
             val resolved = resolveFast(path)
                 ?: return errJson(Response.Status.NOT_FOUND, "Not found")
 
             when {
-                resolved.isDirectory && isZip -> zipResponse(listFast(resolved.docId), resolved.name)
-                resolved.isDirectory          -> if (html) htmlResponse(listFast(resolved.docId), path, resolved.name)
-                                                 else errJson(Response.Status.OK, "ok")
-                else                          -> fileResponse(resolved, session, isDl)
+                resolved.isDirectory && isZip                 -> zipResponse(listFast(resolved.docId), resolved.name)
+                resolved.isDirectory && method == Method.HEAD -> dirHeadResponse()
+                resolved.isDirectory                          -> htmlResponse(listFast(resolved.docId), path, resolved.name)
+                else                                          -> fileResponse(resolved, session, isDl)
             }
         }
     }
+
+    // HEAD on a directory: report headers without building the listing body
+    private fun dirHeadResponse(): Response =
+        newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", "").also {
+            cors(it); it.addHeader("Cache-Control", "no-store")
+        }
 
     // -----------------------------------------------------------------------
     // SAF listing — cached, single-batch ContentResolver query
@@ -258,9 +285,11 @@ class HttpServer(
 
                 while (c.moveToNext()) {
                     val name = c.getString(nameIdx) ?: continue
-                    if (FileUtils.isHiddenOrSystem(name)) continue
+                    if (!options.showHidden && FileUtils.isHiddenOrSystem(name)) continue
                     val docId    = c.getString(idIdx) ?: continue
-                    val mime     = c.getString(mimeIdx) ?: "application/octet-stream"
+                    // Guard mimeIdx like the other optional columns — getString(-1) would throw
+                    // and abort the whole listing if a provider omits the MIME column.
+                    val mime     = (if (mimeIdx >= 0) c.getString(mimeIdx) else null) ?: "application/octet-stream"
                     val isDir    = mime == DocumentsContract.Document.MIME_TYPE_DIR
                     val size     = if (sizeIdx >= 0 && !c.isNull(sizeIdx)) c.getLong(sizeIdx) else 0L
                     val modified = if (modIdx  >= 0 && !c.isNull(modIdx))  c.getLong(modIdx)  else 0L
@@ -286,7 +315,7 @@ class HttpServer(
         var currentEntry: FileEntry? = null
 
         for (part in relativePath.splitToSequence('/').filter { it.isNotEmpty() && it != "." }) {
-            if (part == ".." || FileUtils.isHiddenOrSystem(part)) return null
+            if (part == ".." || (!options.showHidden && FileUtils.isHiddenOrSystem(part))) return null
             currentEntry = listFast(currentDocId).firstOrNull { it.name == part } ?: return null
             currentDocId = currentEntry.docId
         }
@@ -299,43 +328,68 @@ class HttpServer(
     private fun htmlResponse(entries: List<FileEntry>, urlPath: String, dirName: String): Response =
         newFixedLengthResponse(
             Response.Status.OK, "text/html; charset=utf-8",
-            FileUtils.buildHtml(entries, urlPath, dirName)
+            FileUtils.buildHtml(
+                entries, urlPath, dirName,
+                options.title, options.allowZip, options.allowDownload, serverFacts()
+            )
         ).also { cors(it); it.addHeader("Cache-Control", "no-store") }
+
+    // Live server/network facts surfaced in the web listing footer
+    private fun serverFacts(): List<Pair<String, String>> {
+        val facts = ArrayList<Pair<String, String>>(6)
+        facts.add("Served by" to "${options.title} @ ${ServerStateHolder.ip.value}:${ServerStateHolder.port.value}")
+        facts.add("Requests served" to ServerStateHolder.requestCount.value.toString())
+        facts.add("Uptime" to Diagnostics.formatUptime(SystemClock.elapsedRealtime() - ServerStateHolder.startedAtElapsed))
+        facts.add("Device" to "${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+        val ips = NetworkUtils.allIpv4().joinToString(", ") { "${it.first}=${it.second}" }
+        if (ips.isNotEmpty()) facts.add("Interfaces" to ips)
+        return facts
+    }
 
     private fun fileResponse(entry: FileEntry, session: IHTTPSession, forceDownload: Boolean): Response {
         val mime = FileUtils.getMimeType(entry.name)
-        val size = entry.size
         val disp = disposition(entry.name, mime, forceDownload)
 
+        // Open the descriptor once. statSize is authoritative; the cached SAF size may be 0
+        // (some providers don't report it) or stale — trusting it would truncate the download.
+        val pfd = try { context.contentResolver.openFileDescriptor(entry.uri, "r") }
+                  catch (_: Exception) { null }
+        val size = pfd?.statSize?.takeIf { it >= 0 } ?: entry.size
+
         if (session.method == Method.HEAD) {
-            return newFixedLengthResponse(Response.Status.OK, mime, "").also {
-                it.addHeader("Content-Length", size.toString())
+            try { pfd?.close() } catch (_: Exception) {}
+            // null body + declared size → NanoHTTPD emits a single correct Content-Length and no body
+            // (adding Content-Length manually produced a duplicate header)
+            return newFixedLengthResponse(Response.Status.OK, mime, null, size).also {
                 it.addHeader("Accept-Ranges", "bytes")
                 it.addHeader("Content-Disposition", disp)
                 cors(it)
             }
         }
 
-        val range = session.headers["range"]
-        return if (range != null) rangedResponse(entry, mime, size, range, disp)
-               else               fullResponse(entry, mime, size, disp)
-    }
-
-    private fun fullResponse(entry: FileEntry, mime: String, size: Long, disp: String): Response {
-        // openFileDescriptor + FileInputStream hits the OS page cache directly
-        // and avoids the ContentResolver wrapper overhead vs openInputStream
-        val pfd = try { context.contentResolver.openFileDescriptor(entry.uri, "r") }
-                  catch (_: Exception) { null }
-
-        return if (pfd != null) {
-            val stream = FileInputStream(pfd.fileDescriptor)
-            newFixedLengthResponse(Response.Status.OK, mime, AutoCloseStream(stream, pfd), size)
-        } else {
-            // Fallback to openInputStream
+        if (pfd == null) {
+            // Fallback — stream via ContentResolver (no descriptor / page-cache path)
             val stream = context.contentResolver.openInputStream(entry.uri)
                 ?: return errJson(Response.Status.INTERNAL_ERROR, "Cannot open file")
-            newFixedLengthResponse(Response.Status.OK, mime, stream, size)
-        }.also {
+            return newFixedLengthResponse(Response.Status.OK, mime, stream, size).also {
+                it.addHeader("Content-Disposition", disp)
+                it.addHeader("Accept-Ranges", "bytes")
+                it.addHeader("Cache-Control", "no-store")
+                cors(it)
+            }
+        }
+
+        // Single range only — ignore multi-range ("bytes=a-b,c-d") and serve the whole file (200)
+        val range = session.headers["range"]?.takeUnless { it.contains(',') }
+        return if (range != null) rangedResponse(pfd, mime, size, range, disp)
+               else               fullResponse(pfd, mime, size, disp)
+    }
+
+    // openFileDescriptor + FileInputStream hits the OS page cache directly,
+    // avoiding the ContentResolver wrapper overhead vs openInputStream. Takes ownership of pfd.
+    private fun fullResponse(pfd: ParcelFileDescriptor, mime: String, size: Long, disp: String): Response {
+        val stream = FileInputStream(pfd.fileDescriptor)
+        return newFixedLengthResponse(Response.Status.OK, mime, AutoCloseStream(stream, pfd), size).also {
             it.addHeader("Content-Disposition", disp)
             it.addHeader("Accept-Ranges", "bytes")
             it.addHeader("Cache-Control", "no-store")
@@ -343,22 +397,29 @@ class HttpServer(
         }
     }
 
+    // Takes ownership of pfd; closes it on every early-return path.
     private fun rangedResponse(
-        entry: FileEntry, mime: String, size: Long, rangeHeader: String, disp: String
+        pfd: ParcelFileDescriptor, mime: String, size: Long, rangeHeader: String, disp: String
     ): Response {
-        val range = parseRange(rangeHeader, size)
-            ?: return newFixedLengthResponse(Response.Status.RANGE_NOT_SATISFIABLE, "text/plain", "").also {
+        val range = parseByteRange(rangeHeader, size)
+        if (range == null) {
+            try { pfd.close() } catch (_: Exception) {}
+            return newFixedLengthResponse(Response.Status.RANGE_NOT_SATISFIABLE, "text/plain", "").also {
                 it.addHeader("Content-Range", "bytes */$size"); cors(it)
             }
+        }
 
         val (start, end) = range
         val length = end - start + 1
 
-        val pfd = try { context.contentResolver.openFileDescriptor(entry.uri, "r") }
-                  catch (_: Exception) { null }
-            ?: return errJson(Response.Status.INTERNAL_ERROR, "Cannot open file")
-
-        val fis = FileInputStream(pfd.fileDescriptor).also { it.channel.position(start) }
+        val fis = FileInputStream(pfd.fileDescriptor)
+        try {
+            fis.channel.position(start)   // may throw for non-seekable sources
+        } catch (_: Exception) {
+            try { fis.close() } catch (_: Exception) {}
+            try { pfd.close() } catch (_: Exception) {}
+            return errJson(Response.Status.INTERNAL_ERROR, "Cannot seek file")
+        }
 
         return newFixedLengthResponse(
             Response.Status.PARTIAL_CONTENT, mime,
@@ -375,33 +436,44 @@ class HttpServer(
     private fun zipResponse(entries: List<FileEntry>, dirName: String): Response {
         val pipedIn  = PipedInputStream(PIPE_BUFFER)
         val pipedOut = PipedOutputStream(pipedIn)
-        executor.execute {
-            try { FileUtils.zipEntries(context, entries, dirName, pipedOut) }
-            catch (_: IOException) {}
+        // Dedicated thread — NOT the request pool. With CallerRunsPolicy a saturated pool would
+        // run the producer on the consumer thread and deadlock on the pipe buffer.
+        Thread({
+            try { FileUtils.zipEntries(context, entries, dirName, pipedOut) { listFast(it.docId) } }
+            catch (_: Exception) {}
             finally { try { pipedOut.close() } catch (_: Exception) {} }
-        }
+        }, "ds-zip").apply { isDaemon = true; start() }
         return newChunkedResponse(Response.Status.OK, "application/zip", pipedIn).also {
-            it.addHeader("Content-Disposition", "attachment; filename=\"${dirName.replace("\"","_")}.zip\"")
+            it.addHeader("Content-Disposition", contentDisposition("$dirName.zip", inline = false))
             it.addHeader("Cache-Control", "no-store")
             cors(it)
         }
     }
 
     // -----------------------------------------------------------------------
-    // Auth — O(1) token comparison (no decode on hot path)
+    // Auth — parse "user:password" properly, constant-time compare (any username allowed)
     // -----------------------------------------------------------------------
     private fun checkAuth(session: IHTTPSession): Boolean {
-        if (passBytes == null) return true   // No password configured
+        val expectedPass = passwordBytes ?: return true   // No password configured → open
         val h = session.headers["authorization"] ?: return false
-        if (!h.startsWith("Basic ")) return false
+        if (!h.regionMatches(0, "Basic ", 0, 6, ignoreCase = true)) return false   // scheme is case-insensitive
         return try {
-            // Decode once — no Regex, no substring allocation beyond the decoded bytes
-            val decoded = Base64.decode(h.substring(6), Base64.DEFAULT)
-            // Check that decoded ends with ":password" — allows any username
-            val pl = passBytes.size
-            decoded.size >= pl && decoded.sliceArray(decoded.size - pl until decoded.size)
-                .contentEquals(passBytes)
+            val decoded = Base64.decode(h.substring(6).trim(), Base64.DEFAULT)
+            val colon = decoded.indexOf(':'.code.toByte())
+            if (colon < 0) return false
+            val user = decoded.copyOfRange(0, colon)
+            // Everything after the first ':' is the password (passwords may contain ':')
+            val pass = decoded.copyOfRange(colon + 1, decoded.size)
+            val userOk = usernameBytes?.let { constantTimeEquals(user, it) } ?: true  // null = any username
+            userOk and constantTimeEquals(pass, expectedPass)   // non-short-circuit keeps timing uniform
         } catch (_: Exception) { false }
+    }
+
+    private fun constantTimeEquals(a: ByteArray, b: ByteArray): Boolean {
+        if (a.size != b.size) return false
+        var diff = 0
+        for (i in a.indices) diff = diff or (a[i].toInt() xor b[i].toInt())
+        return diff == 0
     }
 
     private fun unauthorized(): Response =
@@ -413,22 +485,19 @@ class HttpServer(
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
-    private fun parseRange(header: String, size: Long): Pair<Long, Long>? {
-        val m = RANGE_RE.find(header) ?: return null
-        val s = m.groupValues[1]; val e = m.groupValues[2]
-        val start = when {
-            s.isEmpty() && e.isNotEmpty() -> size - e.toLong()
-            s.isNotEmpty()                -> s.toLong()
-            else                          -> return null
-        }
-        val end = if (e.isEmpty() || s.isEmpty()) size - 1 else minOf(e.toLong(), size - 1)
-        if (start < 0 || start > end || end >= size) return null
-        return start to end
-    }
-
     private fun disposition(name: String, mime: String, force: Boolean): String {
         val inline = !force && (INLINE_PREFIXES.any { mime.startsWith(it) } || mime == INLINE_PDF)
-        return "${if (inline) "inline" else "attachment"}; filename=\"${name.replace("\"","_")}\""
+        return contentDisposition(name, inline)
+    }
+
+    // Build a safe Content-Disposition: strip CR/LF/control chars (header-injection guard),
+    // emit an ASCII fallback filename and an RFC 5987 filename* for non-ASCII names.
+    private fun contentDisposition(name: String, inline: Boolean): String {
+        val type  = if (inline) "inline" else "attachment"
+        val clean = name.filter { it >= ' ' && it != '"' && it != '\\' }
+        val ascii = buildString { for (c in clean) append(if (c.code in 0x20..0x7E) c else '_') }
+        val star  = FileUtils.encodeSeg(name)   // RFC 3986 %-encoding is a valid RFC 5987 value
+        return "$type; filename=\"$ascii\"; filename*=UTF-8''$star"
     }
 
     private fun cors(r: Response) {
@@ -489,6 +558,31 @@ class HttpServer(
 }
 
 // ============================================================================
+// Byte-range parsing — pure, top-level so it is unit-testable without a Context
+// ============================================================================
+private val RANGE_RE = Regex("""bytes=(\d*)-(\d*)""")
+
+/**
+ * Parse a single HTTP byte-range against [size]. Returns an inclusive (start, end) pair,
+ * or null when the range is unsatisfiable/malformed (caller responds 416).
+ *  - Suffix ranges ("bytes=-N") are clamped to the whole representation when N > size.
+ *  - Non-numeric/overflowing values are treated as unsatisfiable rather than throwing.
+ */
+internal fun parseByteRange(header: String, size: Long): Pair<Long, Long>? {
+    val m = RANGE_RE.find(header) ?: return null
+    val s = m.groupValues[1]; val e = m.groupValues[2]
+    return try {
+        val start = when {
+            s.isEmpty() && e.isNotEmpty() -> maxOf(0L, size - e.toLong())   // suffix; clamp to file start
+            s.isNotEmpty()                -> s.toLong()
+            else                          -> return null
+        }
+        val end = if (e.isEmpty() || s.isEmpty()) size - 1 else minOf(e.toLong(), size - 1)
+        if (start < 0 || start > end || end >= size) null else start to end
+    } catch (_: NumberFormatException) { null }
+}
+
+// ============================================================================
 // Foreground Service
 // ============================================================================
 class ServerForegroundService : Service() {
@@ -498,61 +592,108 @@ class ServerForegroundService : Service() {
         private const val CHANNEL_ID      = "droidserve_channel"
         private const val NOTIFICATION_ID = 1001
 
-        const val ACTION_START   = "ACTION_START"
-        const val ACTION_STOP    = "ACTION_STOP"
-        const val EXTRA_URI      = "extra_uri"
-        const val EXTRA_PORT     = "extra_port"
-        const val EXTRA_PASSWORD = "extra_password"
+        const val ACTION_START        = "ACTION_START"
+        const val ACTION_STOP         = "ACTION_STOP"
+        const val EXTRA_URI           = "extra_uri"
+        const val EXTRA_PORT          = "extra_port"
+        const val EXTRA_PASSWORD      = "extra_password"
+        const val EXTRA_USERNAME      = "extra_username"
+        const val EXTRA_SHOW_HIDDEN   = "extra_show_hidden"
+        const val EXTRA_ALLOW_ZIP     = "extra_allow_zip"
+        const val EXTRA_ALLOW_DL      = "extra_allow_dl"
+        const val EXTRA_TITLE         = "extra_title"
+        const val EXTRA_KEEP_AWAKE    = "extra_keep_awake"
+        const val EXTRA_AUTO_STOP_MIN = "extra_auto_stop_min"
 
-        private const val PREF_FILE    = "droidserve_prefs"
-        private const val KEY_URI      = "server_uri"
-        private const val KEY_PORT     = "server_port"
-        private const val KEY_PASSWORD = "server_password"
+        const val PREF_FILE        = "droidserve_prefs"
+        private const val KEY_URI  = "server_uri"
+        const val KEY_PORT         = "server_port"
+        const val KEY_PASSWORD     = "server_password"
+        const val KEY_USERNAME     = "server_username"
+        const val KEY_SHOW_HIDDEN  = "server_show_hidden"
+        const val KEY_ALLOW_ZIP    = "server_allow_zip"
+        const val KEY_ALLOW_DL     = "server_allow_dl"
+        const val KEY_TITLE        = "server_title"
+        const val KEY_KEEP_AWAKE   = "server_keep_awake"
+        const val KEY_AUTO_STOP    = "server_auto_stop"
     }
 
+    // All access to httpServer is guarded by `lock`; `stopped` guards against a start that
+    // finishes after a concurrent stop (which would otherwise leak an untracked running server).
+    private val lock = Any()
+    @Volatile private var stopped = false
     private var httpServer: HttpServer? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+    private var autoStopJob: Job? = null
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onCreate() { super.onCreate(); createNotificationChannel() }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForegroundCompat(buildNotif("Starting…", ""))
-
         when (intent?.action) {
+            // Stop arrives via startService / notification PendingIntent — no startForegroundService
+            // contract to satisfy, so do NOT promote to foreground here (avoids a notification flash).
             ACTION_STOP  -> { stopAll(); return START_NOT_STICKY }
             ACTION_START -> {
-                val port   = intent.getIntExtra(EXTRA_PORT, -1)
-                val uriStr = intent.getStringExtra(EXTRA_URI) ?: return START_NOT_STICKY
-                val pass   = intent.getStringExtra(EXTRA_PASSWORD)
-                saveConfig(uriStr, port, pass)
-                launch(Uri.parse(uriStr), port, pass)
+                stopped = false
+                startForegroundCompat(buildNotif("Starting…", ""))
+                val uriStr = intent.getStringExtra(EXTRA_URI)
+                if (uriStr == null) { stopSelf(); return START_NOT_STICKY }
+                val cfg = Config(
+                    uri             = uriStr,
+                    port            = intent.getIntExtra(EXTRA_PORT, 8080),
+                    keepAwake       = intent.getBooleanExtra(EXTRA_KEEP_AWAKE, true),
+                    autoStopMinutes = intent.getIntExtra(EXTRA_AUTO_STOP_MIN, 0),
+                    options = ServerOptions(
+                        password      = intent.getStringExtra(EXTRA_PASSWORD)?.ifBlank { null },
+                        username      = intent.getStringExtra(EXTRA_USERNAME)?.ifBlank { null },
+                        showHidden    = intent.getBooleanExtra(EXTRA_SHOW_HIDDEN, false),
+                        allowZip      = intent.getBooleanExtra(EXTRA_ALLOW_ZIP, true),
+                        allowDownload = intent.getBooleanExtra(EXTRA_ALLOW_DL, true),
+                        title         = intent.getStringExtra(EXTRA_TITLE)?.ifBlank { null } ?: "DroidServe"
+                    )
+                )
+                saveConfig(cfg)
+                launchServer(cfg)
             }
             null -> {
+                stopped = false
+                startForegroundCompat(buildNotif("Starting…", ""))
                 val cfg = loadConfig()
                 if (cfg.uri == null) { stopSelf(); return START_NOT_STICKY }
-                launch(Uri.parse(cfg.uri), cfg.port, cfg.password)
+                launchServer(cfg)
             }
         }
         return START_STICKY
     }
 
-    private fun launch(uri: Uri, port: Int, pass: String?) {
+    private fun launchServer(cfg: Config) {
+        val uri = Uri.parse(cfg.uri)
         serviceScope.launch {
             try {
-                httpServer?.stop(); httpServer = null
+                val old = synchronized(lock) { val o = httpServer; httpServer = null; o }
+                try { old?.stop() } catch (_: Exception) {}
                 DirectoryCache.clear()
 
-                val srv = HttpServer(this@ServerForegroundService, uri, port, pass)
+                val srv = HttpServer(this@ServerForegroundService, uri, cfg.port, cfg.options)
                 srv.start(30_000, false)
-                httpServer = srv
 
+                // Only keep the server if we weren't stopped while it was starting up
+                val kept = synchronized(lock) {
+                    if (stopped) false else { httpServer = srv; true }
+                }
+                if (!kept) { try { srv.stop() } catch (_: Exception) {}; return@launch }
+
+                if (cfg.keepAwake) acquireLocks()
+                startInactivityWatchdog(cfg.autoStopMinutes)
                 val ip  = NetworkUtils.getLocalIpAddress()
-                val url = "http://$ip:$port"
-                ServerStateHolder.onStarted(ip, port)
+                val url = "http://$ip:${cfg.port}"
+                ServerStateHolder.onStarted(ip, cfg.port)
 
                 withContext(Dispatchers.Main) {
                     (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-                        .notify(NOTIFICATION_ID, buildNotif("Running — $ip:$port", url))
+                        .notify(NOTIFICATION_ID, buildNotif("Running — $ip:${cfg.port}", url))
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Start failed", e)
@@ -562,10 +703,29 @@ class ServerForegroundService : Service() {
         }
     }
 
+    // Stop the server automatically after [minutes] with no served requests (0 = never).
+    private fun startInactivityWatchdog(minutes: Int) {
+        autoStopJob?.cancel()
+        if (minutes <= 0) return
+        val idleMs = minutes * 60_000L
+        autoStopJob = serviceScope.launch {
+            while (isActive) {
+                delay(60_000)
+                if (SystemClock.elapsedRealtime() - ServerStateHolder.lastActivityElapsed >= idleMs) {
+                    Log.d(TAG, "Auto-stop: idle for $minutes min")
+                    withContext(Dispatchers.Main) { stopAll() }
+                    break
+                }
+            }
+        }
+    }
+
     private fun stopAll() {
+        stopped = true
         serviceScope.coroutineContext.cancelChildren()
-        try { httpServer?.stop() } catch (_: Exception) {}
-        httpServer = null
+        val srv = synchronized(lock) { val s = httpServer; httpServer = null; s }
+        try { srv?.stop() } catch (_: Exception) {}
+        releaseLocks()
         DirectoryCache.clear()
         ServerStateHolder.onStopped()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -573,8 +733,10 @@ class ServerForegroundService : Service() {
     }
 
     override fun onDestroy() {
-        try { httpServer?.stop() } catch (_: Exception) {}
-        httpServer = null
+        stopped = true
+        val srv = synchronized(lock) { val s = httpServer; httpServer = null; s }
+        try { srv?.stop() } catch (_: Exception) {}
+        releaseLocks()
         DirectoryCache.clear()
         ServerStateHolder.onStopped()
         serviceScope.cancel()
@@ -583,10 +745,36 @@ class ServerForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    // Keep CPU and Wi-Fi awake during transfers so downloads don't stall when the screen sleeps.
+    @Suppress("DEPRECATION")  // WIFI_MODE_FULL_HIGH_PERF still works; no equivalent across minSdk 24
+    private fun acquireLocks() {
+        if (wakeLock == null) {
+            wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DroidServe::server")
+                .also { it.setReferenceCounted(false); it.acquire() }
+        }
+        if (wifiLock == null) {
+            wifiLock = (applicationContext.getSystemService(WIFI_SERVICE) as WifiManager)
+                .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "DroidServe::wifi")
+                .also { it.setReferenceCounted(false); it.acquire() }
+        }
+    }
+
+    private fun releaseLocks() {
+        try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
+        try { wifiLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
+        wakeLock = null; wifiLock = null
+    }
+
     private fun startForegroundCompat(n: Notification) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-            startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        else startForeground(NOTIFICATION_ID, n)
+        when {
+            // specialUse has no daily runtime cap (dataSync is limited to 6h/day on Android 14+)
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE ->
+                startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
+                startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            else -> startForeground(NOTIFICATION_ID, n)
+        }
     }
 
     private fun buildNotif(status: String, url: String): Notification {
@@ -604,7 +792,7 @@ class ServerForegroundService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("DroidServe")
             .setContentText(status)
-            .setSmallIcon(IconCompat.createWithBitmap(DroidServeIconDrawable.toBitmap(96)))
+            .setSmallIcon(R.drawable.ic_stat_droidserve)
             .setLargeIcon(DroidServeIconDrawable.toCircularBitmap(128))
             .setContentIntent(openPi)
             .setOngoing(true)
@@ -619,19 +807,44 @@ class ServerForegroundService : Service() {
         }
     }
 
-    private fun saveConfig(uri: String, port: Int, password: String?) =
-        getSharedPreferences(PREF_FILE, MODE_PRIVATE).edit()
-            .putString(KEY_URI, uri).putInt(KEY_PORT, port)
-            .putString(KEY_PASSWORD, password ?: "").apply()
+    private data class Config(
+        val uri: String?,
+        val port: Int,
+        val options: ServerOptions,
+        val keepAwake: Boolean,
+        val autoStopMinutes: Int
+    )
 
-    private data class Config(val uri: String?, val port: Int, val password: String?)
+    private fun saveConfig(cfg: Config) {
+        getSharedPreferences(PREF_FILE, MODE_PRIVATE).edit()
+            .putString(KEY_URI, cfg.uri)
+            .putInt(KEY_PORT, cfg.port)
+            .putString(KEY_PASSWORD, cfg.options.password ?: "")
+            .putString(KEY_USERNAME, cfg.options.username ?: "")
+            .putBoolean(KEY_SHOW_HIDDEN, cfg.options.showHidden)
+            .putBoolean(KEY_ALLOW_ZIP, cfg.options.allowZip)
+            .putBoolean(KEY_ALLOW_DL, cfg.options.allowDownload)
+            .putString(KEY_TITLE, cfg.options.title)
+            .putBoolean(KEY_KEEP_AWAKE, cfg.keepAwake)
+            .putInt(KEY_AUTO_STOP, cfg.autoStopMinutes)
+            .apply()
+    }
 
     private fun loadConfig(): Config {
         val p = getSharedPreferences(PREF_FILE, MODE_PRIVATE)
         return Config(
-            p.getString(KEY_URI, null),
-            p.getInt(KEY_PORT, 8080),
-            p.getString(KEY_PASSWORD, "")?.ifBlank { null }
+            uri             = p.getString(KEY_URI, null),
+            port            = p.getInt(KEY_PORT, 8080),
+            keepAwake       = p.getBoolean(KEY_KEEP_AWAKE, true),
+            autoStopMinutes = p.getInt(KEY_AUTO_STOP, 0),
+            options = ServerOptions(
+                password      = p.getString(KEY_PASSWORD, "")?.ifBlank { null },
+                username      = p.getString(KEY_USERNAME, "")?.ifBlank { null },
+                showHidden    = p.getBoolean(KEY_SHOW_HIDDEN, false),
+                allowZip      = p.getBoolean(KEY_ALLOW_ZIP, true),
+                allowDownload = p.getBoolean(KEY_ALLOW_DL, true),
+                title         = p.getString(KEY_TITLE, "DroidServe")?.ifBlank { "DroidServe" } ?: "DroidServe"
+            )
         )
     }
 }
