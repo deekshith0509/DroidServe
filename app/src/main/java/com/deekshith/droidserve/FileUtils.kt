@@ -200,7 +200,8 @@ object FileUtils {
                 sb.append("""<div class="info"><div class="name">""").append(escHtml(eName))
                 sb.append("""</div><div class="meta">Directory</div></div></a>""")
                 if (allowZip) {
-                    sb.append("""<a class="btn-zip" href="/""").append(href).append("""?zip=1""").append(tokAmp).append(""">⬇ ZIP</a>""")
+                    val zipHref = "/$href?zip=1$tokAmp"
+                    sb.append("""<a class="btn-zip" href="""").append(zipHref).append("""">⬇ ZIP</a>""")
                 }
                 sb.append("</div>")
             } else {
@@ -209,20 +210,18 @@ object FileUtils {
                 val mime = getMimeType(eName)
                 // Every file carries its mime so client JS can offer "open with" (Android chooser).
                 sb.append("""<div class="item file" data-name="${escHtml(eName)}" data-size="${e.size}" data-mime="${escHtml(mime)}">""")
-                // Tapping the name opens the built-in player/viewer page, which streams
-                // inline where possible and always offers "Open in VLC" + direct + download.
-                sb.append("""<a class="item-main" href="/""").append(href).append("""?play=1""").append(tokAmp).append("""">""")
+                // Tapping the name opens the file directly: the browser plays/shows it inline
+                // where it can; on Android, JS below hands it to the OS "open with" chooser
+                // (VLC/MX for video, etc.). The ⬇ button is the only download action.
+                sb.append("""<a class="item-main" href="/""").append(href).append(tokQ).append("""">""")
                 sb.append("""<span class="icon">""").append(fileIcon(eName)).append("</span>")
                 sb.append("""<div class="info"><div class="name">""").append(escHtml(eName))
                 sb.append("""</div><div class="meta">""").append(escHtml(meta))
                 sb.append("</div></div></a>")
-                // Download button pinned to the right edge of the row. Always shown when
-                // downloads are allowed; it's the explicit "save file" action, separate from
-                // tapping the name (which opens the file / offers an app chooser).
-                if (allowDownload) {
-                    sb.append("""<a class="btn-dl" href="/""").append(href)
-                    sb.append("""?dl=1""").append(tokAmp).append("""" download="${escHtml(eName)}" title="Download">⬇</a>""")
-                }
+                // Download button pinned to the right edge — always available so users can
+                // save any file directly, independent of the inline open/preview behaviour.
+                sb.append("""<a class="btn-dl" href="/""").append(href)
+                sb.append("""?dl=1""").append(tokAmp).append("""" download="${escHtml(eName)}" title="Download">⬇</a>""")
                 sb.append("</div>")
             }
         }
@@ -252,101 +251,6 @@ object FileUtils {
     private val DATE_FMT = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
     fun formatDate(ms: Long): String = if (ms <= 0L) "" else DATE_FMT.format(java.util.Date(ms))
 
-    // ----------------------------------------------------------------------
-    // Player / viewer page — one universal page that plays or shows any file, with
-    // guaranteed cross-platform fallbacks (in-browser player, Open in VLC, download).
-    // ----------------------------------------------------------------------
-    fun buildPlayerPage(
-        fileName: String,
-        urlPath: String,
-        mime: String,
-        allowDownload: Boolean,
-        title: String = "DroidServe",
-        authToken: String? = null
-    ): String {
-        val safeTitle = escHtml(title.ifBlank { "DroidServe" })
-        val safeName  = escHtml(fileName)
-        val encPath   = urlPath.split('/').filter { it.isNotEmpty() }.joinToString("/") { encodeSeg(it) }
-        val tokQ  = if (authToken != null) "?tok=${encodeSeg(authToken)}" else ""
-        val tokAmp = if (authToken != null) "&tok=${encodeSeg(authToken)}" else ""
-        val src   = "/$encPath$tokQ"                       // raw stream URL
-        val dlUrl = "/$encPath?dl=1$tokAmp"                // forced download
-        val m3u   = "/$encPath?m3u=1$tokAmp"               // playlist for VLC/MX
-        // Parent folder to return to (carry token so the listing stays authorized)
-        val parentPath = urlPath.trimStart('/').substringBeforeLast('/', "")
-            .split('/').filter { it.isNotEmpty() }.joinToString("/") { encodeSeg(it) }
-        val backUrl = "/$parentPath" + (if (authToken != null) "?tok=${encodeSeg(authToken)}" else "")
-
-        // Categorise. "Browser can play" = formats mainstream browsers decode natively.
-        val ext = fileName.substringAfterLast('.', "").lowercase()
-        val browserVideo = ext in setOf("mp4", "webm", "ogv", "m4v", "mov")
-        val browserAudio = ext in setOf("mp3", "ogg", "oga", "wav", "flac", "aac", "m4a", "opus", "weba")
-        val isVideo = mime.startsWith("video/")
-        val isAudio = mime.startsWith("audio/")
-        val isImage = mime.startsWith("image/")
-        val isPdf   = mime == "application/pdf"
-        val isText  = mime.startsWith("text/") || mime == "application/json" || mime == "application/xml"
-
-        val sb = StringBuilder(4096)
-        sb.append(PLAYER_HEAD_1).append(safeName).append(" — ").append(safeTitle).append(PLAYER_HEAD_2)
-        sb.append("""<a class="back" href="""").append(backUrl).append("""">← Back</a>""")
-        sb.append("""<div class="pname">""").append(iconFor(fileName)).append(' ').append(safeName).append("</div>")
-
-        sb.append("""<div class="stage">""")
-        when {
-            isVideo -> {
-                sb.append("""<video id="pl" controls autoplay playsinline preload="metadata" src="""").append(src).append("""" poster=""></video>""")
-                if (!browserVideo) sb.append(unsupportedNote("This video format may not play in-browser."))
-            }
-            isAudio -> {
-                sb.append("""<div class="audiowrap"><div class="acover">🎵</div><audio id="pl" controls autoplay preload="metadata" src="""").append(src).append(""""></audio></div>""")
-                if (!browserAudio) sb.append(unsupportedNote("This audio format may not play in-browser."))
-            }
-            isImage -> sb.append("""<img class="pimg" src="""").append(src).append("""" alt="""").append(safeName).append("""">""")
-            isPdf   -> sb.append("""<iframe class="pframe" src="""").append(src).append(""""></iframe>""")
-            isText  -> sb.append("""<iframe class="pframe ptext" src="""").append(src).append(""""></iframe>""")
-            else    -> sb.append("""<div class="unknown"><div class="ubig">📄</div><div>No in-browser preview for this file type.</div><div class="usub">Use the buttons below to open or download it.</div></div>""")
-        }
-        sb.append("</div>")   // .stage
-
-        // Action buttons — universal fallbacks that work on every platform.
-        sb.append("""<div class="acts">""")
-        if (isVideo || isAudio) {
-            // "Open in VLC" via m3u works on laptop + phone + TV, even for mkv/avi.
-            sb.append("""<a class="act primary" href="""").append(m3u).append("""">▶ Open in VLC / player</a>""")
-        }
-        sb.append("""<a class="act" href="""").append(src).append("""" target="_blank" rel="noopener">🔗 Open raw stream</a>""")
-        if (allowDownload) sb.append("""<a class="act" href="""").append(dlUrl).append("""" download="""").append(safeName).append("""">⬇ Download</a>""")
-        // Android-only: hand to the system app chooser directly.
-        sb.append("""<button class="act" id="openWith" style="display:none">📱 Open with app…</button>""")
-        sb.append("</div>")
-
-        sb.append(PLAYER_TAIL_1)
-        // Pass data to the small script.
-        sb.append("""<script>window.DS={src:"""").append(jsStr(src)).append(""",mime:""").append(jsStr(mime)).append("""};</script>""")
-        sb.append(PLAYER_TAIL_2)
-        return sb.toString()
-    }
-
-    private fun unsupportedNote(msg: String): String =
-        """<div class="warn">⚠ ${escHtml(msg)} Tap <b>Open in VLC / player</b> below to stream it in a real player.</div>"""
-
-    private fun iconFor(name: String): String = fileIcon(name)
-
-    // Minimal JS string escaper for embedding server values safely.
-    private fun jsStr(s: String): String {
-        val out = StringBuilder(s.length + 2).append('"')
-        for (c in s) when (c) {
-            '"' -> out.append("\\\"")
-            '\\' -> out.append("\\\\")
-            '<' -> out.append("\\u003c")
-            '>' -> out.append("\\u003e")
-            '\n' -> out.append("\\n")
-            '\r' -> out.append("\\r")
-            else -> out.append(c)
-        }
-        return out.append('"').toString()
-    }
 
     // ----------------------------------------------------------------------
     // Helpers
@@ -534,6 +438,26 @@ upd();
 var t;q.addEventListener('input',function(){clearTimeout(t);t=setTimeout(upd,60);});
 // '/' focuses the filter box for quick keyboard search
 document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});
+
+// ── Native "open with" on Android ────────────────────────────────────────
+// Tapping a file name opens it directly. On Android we route through the OS app chooser
+// (intent://) so videos open in VLC/MX, audio in a music app, etc. On Linux/Windows/Mac
+// and TVs the plain link is used: the browser plays media it supports inline and hands
+// the rest to the OS default. The ⬇ button on the right stays download-only.
+var ua=navigator.userAgent,isAndroid=/Android/i.test(ua);
+if(isAndroid){
+document.querySelectorAll('.item[data-mime] .item-main').forEach(function(a){
+a.addEventListener('click',function(e){
+var mime=a.closest('.item').dataset.mime||'';
+// Only hand video/audio to the OS chooser (VLC/MX). Images, PDFs, text and unknown
+// files open inline in the browser — routing those through an intent would do nothing.
+if(!/^video\/|^audio\//.test(mime))return;
+var abs=a.href,m=abs.match(/^(https?):\/\/([^#]*)$/i);if(!m)return;
+e.preventDefault();
+var it='intent://'+m[2]+'#Intent;scheme='+m[1]+';action=android.intent.action.VIEW;type='+mime+';end';
+window.location.href=it;
+});});
+}
 document.querySelectorAll('.sb[data-s]').forEach(function(b){
 b.addEventListener('click',function(){
 document.querySelectorAll('.sb[data-s]').forEach(function(x){x.classList.remove('on');});b.classList.add('on');
@@ -575,76 +499,6 @@ e.preventDefault();nav(k.slice(5).toLowerCase());
 });
 // Auto-focus the first file/folder so a remote has an immediate cursor.
 (function(){var f=document.querySelector('.item .item-main');if(f)f.focus();})();
-})();
-</script></body></html>"""
-
-    // ----------------------------------------------------------------------
-    // Player / viewer page template chunks
-    // ----------------------------------------------------------------------
-    private val PLAYER_HEAD_1 = """<!DOCTYPE html>
-<html lang="en"><head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>"""
-
-    private val PLAYER_HEAD_2 = """</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-:root{--bg:#0f172a;--sf:#1e293b;--bd:#334155;--ac:#38bdf8;--tx:#e2e8f0;--mu:#7c8aa0;--dl:#10b981;--gz:#0ea5e9}
-html[data-t=light]{--bg:#f1f5f9;--sf:#fff;--bd:#dbe2ea;--ac:#0284c7;--tx:#0f172a;--mu:#64748b;--dl:#059669;--gz:#0284c7}
-body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--tx);min-height:100vh;display:flex;flex-direction:column;padding:12px;padding-bottom:env(safe-area-inset-bottom,12px)}
-.back{color:var(--ac);text-decoration:none;font-size:14px;font-weight:600;display:inline-block;padding:6px 2px}
-.back:hover{text-decoration:underline}
-.pname{font-size:15px;font-weight:600;margin:6px 0 12px;word-break:break-all;line-height:1.4}
-.stage{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:40vh;background:#000;border:1px solid var(--bd);border-radius:14px;overflow:hidden;padding:0}
-html[data-t=light] .stage{background:#000}
-video{width:100%;max-height:78vh;background:#000;display:block}
-.audiowrap{width:100%;padding:32px 16px;display:flex;flex-direction:column;align-items:center;gap:20px;background:var(--sf)}
-.acover{font-size:72px}
-audio{width:100%;max-width:520px}
-.pimg{max-width:100%;max-height:80vh;object-fit:contain;display:block}
-.pframe{width:100%;height:80vh;border:0;background:#fff}
-.ptext{background:#fff}
-.unknown{padding:48px 20px;text-align:center;color:var(--mu);background:var(--sf);width:100%}
-.ubig{font-size:64px;margin-bottom:12px}
-.usub{font-size:12px;margin-top:6px}
-.warn{width:100%;background:#7c2d12;color:#fed7aa;padding:10px 14px;font-size:13px;line-height:1.5}
-html[data-t=light] .warn{background:#fff7ed;color:#9a3412}
-.acts{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
-.act{flex:1;min-width:140px;text-align:center;background:var(--sf);border:1px solid var(--bd);color:var(--tx);border-radius:11px;padding:14px 16px;font-size:14px;font-weight:600;text-decoration:none;cursor:pointer;transition:border-color .12s,background .12s}
-.act:hover,.act:focus-visible{border-color:var(--ac);outline:none;box-shadow:0 0 0 3px var(--ac)}
-.act.primary{background:var(--gz);color:#fff;border-color:var(--gz)}
-.act.primary:hover{filter:brightness(1.12)}
-</style></head>
-<body>"""
-
-    private val PLAYER_TAIL_1 = ""
-
-    private val PLAYER_TAIL_2 = """
-<script>
-(function(){
-// Inherit the theme chosen on the listing page.
-document.documentElement.setAttribute('data-t',localStorage.getItem('ds-theme')||'dark');
-var ua=navigator.userAgent,isAndroid=/Android/i.test(ua);
-// On Android, expose "Open with app…" which hands the stream URL to the system chooser
-// (VLC / MX Player / any handler) via an intent:// URL.
-if(isAndroid){
-var b=document.getElementById('openWith');
-if(b){b.style.display='';
-b.addEventListener('click',function(){
-var a=document.createElement('a');a.href=DS.src;var abs=a.href;
-var m=abs.match(/^(https?):\/\/([^#]*)$/i);if(!m){window.location.href=abs;return;}
-var it='intent://'+m[2]+'#Intent;scheme='+m[1]+';action=android.intent.action.VIEW';
-if(DS.mime)it+=';type='+DS.mime;it+=';end';
-window.location.href=it;
-});}
-}
-// If the in-browser player errors (codec unsupported), nudge the user toward the player button.
-var pl=document.getElementById('pl');
-if(pl){pl.addEventListener('error',function(){
-var w=document.querySelector('.warn');
-if(!w){w=document.createElement('div');w.className='warn';w.innerHTML='⚠ This file can\u2019t play in this browser. Use <b>Open in VLC / player</b> below.';document.querySelector('.stage').appendChild(w);}
-});}
 })();
 </script></body></html>"""
 }
