@@ -140,8 +140,24 @@ object FileUtils {
         sb.append(HTML_HEAD_2A)
         sb.append(safeTitle)
         sb.append(HTML_HEAD_2B)
-        sb.append(escHtml(urlPath.trimStart('/')))
+
+        // Clickable breadcrumb trail — each segment links to its own directory.
+        buildBreadcrumb(sb, urlPath)
+
         sb.append(HTML_HEAD_3)
+
+        // Toolbar: current-folder ZIP + sort controls
+        sb.append("""<div class="tb"><span class="st" id="st"></span>""")
+        if (allowZip) {
+            val here = encodePath(urlPath)
+            val zipHref = if (here.isEmpty()) "/?zip=1" else "/$here?zip=1"
+            sb.append("""<a class="sb zipall" href="""").append(zipHref)
+            sb.append("""">⬇ Folder ZIP</a>""")
+        }
+        sb.append("""<button class="sb on" data-s="d">Default</button>""")
+        sb.append("""<button class="sb" data-s="n">Name</button>""")
+        sb.append("""<button class="sb" data-s="s">Size ↓</button>""")
+        sb.append("""</div><div class="list" id="ls">""")
 
         // Parent link
         if (urlPath.isNotEmpty() && urlPath != "/") {
@@ -280,6 +296,29 @@ object FileUtils {
     private fun encodePath(path: String): String =
         path.split('/').filter { it.isNotEmpty() }.joinToString("/") { encodeSeg(it) }
 
+    /**
+     * Emit a clickable breadcrumb trail: 🏠 Home / sub / sub / current.
+     * Each ancestor links to its own directory; the current folder is plain text.
+     */
+    private fun buildBreadcrumb(sb: StringBuilder, urlPath: String) {
+        val segs = urlPath.split('/').filter { it.isNotEmpty() }
+        if (segs.isEmpty()) {
+            sb.append("""<span class="cur">🏠 Home</span>""")
+            return
+        }
+        sb.append("""<a href="/">🏠 Home</a>""")
+        val acc = StringBuilder()
+        for ((i, seg) in segs.withIndex()) {
+            acc.append('/').append(encodeSeg(seg))
+            sb.append("""<span class="sep">/</span>""")
+            if (i == segs.lastIndex) {
+                sb.append("""<span class="cur">""").append(escHtml(seg)).append("</span>")
+            } else {
+                sb.append("""<a href="""").append(acc).append("""">""").append(escHtml(seg)).append("</a>")
+            }
+        }
+    }
+
     // ----------------------------------------------------------------------
     // HTML template split into static chunks — no per-request .replace()
     // ----------------------------------------------------------------------
@@ -292,68 +331,80 @@ object FileUtils {
     private val HTML_HEAD_2A = """</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-:root{--bg:#0f172a;--sf:#1e293b;--bd:#334155;--ac:#38bdf8;--tx:#e2e8f0;--mu:#64748b;--gz:#0ea5e9;--dl:#10b981}
-body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--tx);min-height:100vh;padding-bottom:env(safe-area-inset-bottom,0)}
-header{background:var(--sf);padding:12px 16px;border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:100}
+:root{--bg:#0f172a;--sf:#1e293b;--sf2:#243449;--bd:#334155;--ac:#38bdf8;--tx:#e2e8f0;--mu:#7c8aa0;--gz:#0ea5e9;--dl:#10b981;--hv:#1e3a5f;--sh:0 1px 3px rgba(0,0,0,.3)}
+html[data-t=light]{--bg:#f1f5f9;--sf:#ffffff;--sf2:#f8fafc;--bd:#dbe2ea;--ac:#0284c7;--tx:#0f172a;--mu:#64748b;--gz:#0284c7;--dl:#059669;--hv:#e0f2fe;--sh:0 1px 3px rgba(0,0,0,.08)}
+body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--tx);min-height:100vh;padding-bottom:env(safe-area-inset-bottom,0);transition:background .2s,color .2s}
+header{background:var(--sf);padding:12px 16px;border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:100;box-shadow:var(--sh)}
 .hr{display:flex;align-items:center;gap:10px;margin-bottom:8px}
-h1{font-size:18px;color:var(--ac);font-weight:800;flex:1}
-input[type=search]{width:100%;padding:9px 14px;border-radius:10px;border:1.5px solid var(--bd);background:var(--bg);color:var(--tx);font-size:15px;outline:none;transition:border-color .15s}
+h1{font-size:18px;color:var(--ac);font-weight:800;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tgl{background:var(--sf2);border:1px solid var(--bd);color:var(--tx);border-radius:50%;width:34px;height:34px;font-size:16px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:border-color .12s}
+.tgl:hover{border-color:var(--ac)}
+input[type=search]{width:100%;padding:10px 14px;border-radius:10px;border:1.5px solid var(--bd);background:var(--bg);color:var(--tx);font-size:15px;outline:none;transition:border-color .15s}
 input[type=search]:focus{border-color:var(--ac)}
-.path{font-size:11px;color:var(--mu);margin-top:6px;word-break:break-all}
+.crumb{font-size:12px;color:var(--mu);margin-top:8px;word-break:break-all;line-height:1.6}
+.crumb a{color:var(--ac);text-decoration:none}
+.crumb a:hover{text-decoration:underline}
+.crumb .sep{color:var(--bd);margin:0 5px}
+.crumb .cur{color:var(--tx);font-weight:600}
 main{padding:12px;max-width:1200px;margin:0 auto}
-.tb{display:flex;gap:6px;margin-bottom:8px;align-items:center;flex-wrap:wrap}
-.st{font-size:11px;color:var(--mu);flex:1}
-.sb{background:var(--sf);border:1px solid var(--bd);color:var(--tx);border-radius:6px;padding:5px 11px;font-size:11px;cursor:pointer;transition:border-color .12s,color .12s}
+.tb{display:flex;gap:6px;margin-bottom:10px;align-items:center;flex-wrap:wrap}
+.st{font-size:11px;color:var(--mu);flex:1;min-width:80px}
+.sb{background:var(--sf);border:1px solid var(--bd);color:var(--tx);border-radius:7px;padding:6px 12px;font-size:12px;cursor:pointer;text-decoration:none;transition:border-color .12s,color .12s,background .12s}
 .sb:hover,.sb.on{border-color:var(--ac);color:var(--ac)}
-.list{display:flex;flex-direction:column;gap:4px}
-.item{display:flex;align-items:stretch;background:var(--sf);border:1px solid var(--bd);border-radius:10px;overflow:hidden;transition:border-color .12s,background .12s;min-height:54px}
-.item:hover{border-color:var(--ac);background:#1e3a5f}
-.item-main{flex:1;min-width:0;display:flex;align-items:center;gap:10px;padding:10px 12px;text-decoration:none;color:var(--tx)}
-.icon{font-size:20px;min-width:24px;text-align:center;flex-shrink:0}
+.sb.zipall{background:var(--gz);color:#fff;border-color:var(--gz);font-weight:600}
+.sb.zipall:hover{filter:brightness(1.12);color:#fff}
+.list{display:flex;flex-direction:column;gap:5px}
+.item{display:flex;align-items:stretch;background:var(--sf);border:1px solid var(--bd);border-radius:11px;overflow:hidden;transition:border-color .12s,background .12s,transform .08s;min-height:56px;box-shadow:var(--sh)}
+.item:hover{border-color:var(--ac);background:var(--hv)}
+.item:active{transform:scale(.995)}
+.item-main{flex:1;min-width:0;display:flex;align-items:center;gap:12px;padding:10px 12px;text-decoration:none;color:var(--tx)}
+.icon{font-size:22px;min-width:26px;text-align:center;flex-shrink:0}
 .info{flex:1;min-width:0}
 .name{font-weight:500;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.3}
 .meta{font-size:11px;color:var(--mu);margin-top:2px}
 .btn-zip,.btn-dl{flex-shrink:0;display:flex;align-items:center;justify-content:center;padding:0 14px;font-weight:700;text-decoration:none;border-left:1px solid var(--bd);white-space:nowrap;cursor:pointer;transition:filter .12s}
-.btn-zip{background:var(--gz);color:#fff;min-width:68px;font-size:12px}
+.btn-zip{background:var(--gz);color:#fff;min-width:66px;font-size:12px}
 .btn-zip:hover{filter:brightness(1.15)}
-.btn-dl{background:var(--dl);color:#fff;min-width:46px;font-size:18px}
+.btn-dl{background:var(--dl);color:#fff;min-width:48px;font-size:18px}
 .btn-dl:hover{filter:brightness(1.15)}
 .empty{text-align:center;color:var(--mu);padding:60px 20px;font-size:14px}
-.info-foot{margin-top:14px;padding:12px;border:1px solid var(--bd);border-radius:10px;background:var(--sf);font-size:11px;color:var(--mu);line-height:1.7;word-break:break-all}
-.info-h{color:var(--ac);font-weight:700;margin-bottom:4px;font-size:12px}
-::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
+.info-foot{margin-top:16px;padding:14px;border:1px solid var(--bd);border-radius:11px;background:var(--sf);font-size:11px;color:var(--mu);line-height:1.7;word-break:break-all;box-shadow:var(--sh)}
+.info-h{color:var(--ac);font-weight:700;margin-bottom:6px;font-size:12px}
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
 </style></head>
 <body>
 <header>
 <div class="hr"><h1>📡 """
 
-    private val HTML_HEAD_2B = """</h1></div>
-<input type="search" id="q" placeholder="Filter files…" autocomplete="off" autocorrect="off" spellcheck="false">
-<div class="path">/"""
+    private val HTML_HEAD_2B = """</h1><button class="tgl" id="tg" title="Toggle theme" aria-label="Toggle theme">🌙</button></div>
+<input type="search" id="q" placeholder="Filter files in this folder…" autocomplete="off" autocorrect="off" spellcheck="false">
+<nav class="crumb">"""
 
-    private val HTML_HEAD_3 = """</div>
+    private val HTML_HEAD_3 = """</nav>
 </header>
-<main>
-<div class="tb"><span class="st" id="st"></span>
-<button class="sb on" data-s="d">Default</button>
-<button class="sb" data-s="n">Name</button>
-<button class="sb" data-s="s">Size ↓</button>
-</div>
-<div class="list" id="ls">"""
+<main>"""
 
     private val HTML_TAIL = """</div>
 <div class="empty" id="em" style="display:none">No items match.</div>
 </main>
 <script>
 (function(){
+// Theme toggle — persisted in localStorage, defaults to dark.
+var root=document.documentElement,tg=document.getElementById('tg');
+function applyTheme(t){root.setAttribute('data-t',t);tg.textContent=t==='light'?'☀️':'🌙';}
+applyTheme(localStorage.getItem('ds-theme')||'dark');
+tg.addEventListener('click',function(){var t=root.getAttribute('data-t')==='light'?'dark':'light';localStorage.setItem('ds-theme',t);applyTheme(t);});
+
 var ls=document.getElementById('ls'),st=document.getElementById('st'),em=document.getElementById('em'),q=document.getElementById('q');
 var all=Array.from(ls.querySelectorAll('.item[data-name]')),orig=all.slice(),T=all.length;
 function upd(){var v=0,s=q.value.toLowerCase();all.forEach(function(e){var ok=!s||e.dataset.name.toLowerCase().indexOf(s)>=0;e.style.display=ok?'':'none';if(ok)v++;});st.textContent=v+(v!==T?' of '+T:'')+' item'+(T!==1?'s':'');em.style.display=v===0&&T>0?'':'none';}
 upd();
 var t;q.addEventListener('input',function(){clearTimeout(t);t=setTimeout(upd,60);});
-document.querySelectorAll('.sb').forEach(function(b){
+// '/' focuses the filter box for quick keyboard search
+document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});
+document.querySelectorAll('.sb[data-s]').forEach(function(b){
 b.addEventListener('click',function(){
-document.querySelectorAll('.sb').forEach(function(x){x.classList.remove('on');});b.classList.add('on');
+document.querySelectorAll('.sb[data-s]').forEach(function(x){x.classList.remove('on');});b.classList.add('on');
 var m=b.dataset.s,arr;
 if(m==='d')arr=orig.slice();
 else if(m==='n')arr=all.slice().sort(function(a,b){return a.dataset.name.localeCompare(b.dataset.name,undefined,{sensitivity:'base'});});
