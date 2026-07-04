@@ -157,15 +157,18 @@ object FileUtils {
         sb.append("""<button class="sb on" data-s="d">Default</button>""")
         sb.append("""<button class="sb" data-s="n">Name</button>""")
         sb.append("""<button class="sb" data-s="s">Size ↓</button>""")
-        sb.append("""</div><div class="list" id="ls">""")
+        sb.append("</div>")   // close .tb
 
-        // Parent link
+        // Parent link — OUTSIDE the sortable list so it stays pinned at the top
+        // and is never reordered/hidden by sorting or filtering.
         if (urlPath.isNotEmpty() && urlPath != "/") {
             val parent = encodePath(urlPath.trimEnd('/').substringBeforeLast('/', ""))
-            sb.append("""<div class="item dir" data-name=".." data-size="-1"><a class="item-main" href="/""")
+            sb.append("""<div class="item dir parent"><a class="item-main" href="/""")
             sb.append(parent)
-            sb.append(""""><span class="icon">⬆️</span><div class="info"><div class="name">..</div><div class="meta">Parent</div></div></a></div>""")
+            sb.append(""""><span class="icon">⬆️</span><div class="info"><div class="name">..</div><div class="meta">Parent folder</div></div></a></div>""")
         }
+
+        sb.append("""<div class="list" id="ls">""")
 
         val base = encodePath(urlPath)
         for (e in entries) {
@@ -199,6 +202,10 @@ object FileUtils {
                 sb.append("</div>")
             }
         }
+
+        // Close the sortable list and add the "no match" placeholder BEFORE the footer,
+        // so the footer sits outside #ls and is never touched by sort/filter.
+        sb.append("""</div><div class="empty" id="em" style="display:none">No items match your filter.</div>""")
 
         // Transparency footer — counts, totals, and live server/network facts (nothing hidden)
         val fileCount  = entries.count { !it.isDirectory }
@@ -354,6 +361,7 @@ main{padding:12px;max-width:1200px;margin:0 auto}
 .sb.zipall{background:var(--gz);color:#fff;border-color:var(--gz);font-weight:600}
 .sb.zipall:hover{filter:brightness(1.12);color:#fff}
 .list{display:flex;flex-direction:column;gap:5px}
+.parent{margin-bottom:5px}
 .item{display:flex;align-items:stretch;background:var(--sf);border:1px solid var(--bd);border-radius:11px;overflow:hidden;transition:border-color .12s,background .12s,transform .08s;min-height:56px;box-shadow:var(--sh)}
 .item:hover{border-color:var(--ac);background:var(--hv)}
 .item:active{transform:scale(.995)}
@@ -384,9 +392,7 @@ main{padding:12px;max-width:1200px;margin:0 auto}
 </header>
 <main>"""
 
-    private val HTML_TAIL = """</div>
-<div class="empty" id="em" style="display:none">No items match.</div>
-</main>
+    private val HTML_TAIL = """</main>
 <script>
 (function(){
 // Theme toggle — persisted in localStorage, defaults to dark.
