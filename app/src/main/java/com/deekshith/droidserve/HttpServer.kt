@@ -250,6 +250,8 @@ class HttpServer(
         val params = session.parameters
         val isZip  = options.allowZip && params["zip"]?.firstOrNull() == "1"
         val isDl   = options.allowDownload && params["dl"]?.firstOrNull() == "1"
+        val isPlay = params["play"]?.firstOrNull() == "1"    // in-browser player page
+        val isM3u  = params["m3u"]?.firstOrNull() == "1"     // playlist for VLC/external players
 
         // Count only authenticated requests that resolve to a real, servable resource
         // (not OPTIONS / 401 / 403 / 404). Incrementing here also keeps the inactivity
@@ -273,6 +275,8 @@ class HttpServer(
                 resolved.isDirectory && method == Method.HEAD -> dirHeadResponse()
                 resolved.isDirectory && isZip                 -> zipResponse(listFast(resolved.docId), resolved.name)
                 resolved.isDirectory                          -> htmlResponse(listFast(resolved.docId), path, resolved.name)
+                isM3u                                         -> m3uResponse(resolved, path)
+                isPlay && method == Method.GET                -> playerResponse(resolved, path)
                 else                                          -> fileResponse(resolved, session, isDl)
             }
         }
@@ -366,6 +370,40 @@ class HttpServer(
                 authToken = if (authNeeded()) sessionToken else null
             )
         ).also { cors(it); it.addHeader("Cache-Control", "no-store") }
+
+    // In-browser player page: streams media inline where the browser can, and always
+    // offers "Open in VLC" (playlist) + direct link + download, so playback works on any
+    // device/browser including laptop Firefox that can't decode mkv/avi itself.
+    private fun playerResponse(entry: FileEntry, urlPath: String): Response {
+        val tok = if (authNeeded()) sessionToken else null
+        val html = FileUtils.buildPlayerPage(
+            fileName = entry.name,
+            urlPath = urlPath,
+            mime = FileUtils.getMimeType(entry.name),
+            allowDownload = options.allowDownload,
+            title = options.title,
+            authToken = tok
+        )
+        return newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", html)
+            .also { cors(it); it.addHeader("Cache-Control", "no-store") }
+    }
+
+    // Tiny .m3u playlist pointing at the streaming URL. Handing this to VLC/MX makes them
+    // stream the file over the network on any platform (laptop, phone, TV).
+    private fun m3uResponse(entry: FileEntry, urlPath: String): Response {
+        val tok = if (authNeeded()) "?tok=${FileUtils.encodeSeg(sessionToken)}" else ""
+        val ip = ServerStateHolder.ip.value
+        val port = ServerStateHolder.port.value
+        val encPath = urlPath.split('/').filter { it.isNotEmpty() }
+            .joinToString("/") { FileUtils.encodeSeg(it) }
+        val url = "http://$ip:$port/$encPath$tok"
+        val body = "#EXTM3U\n#EXTINF:-1,${entry.name}\n$url\n"
+        return newFixedLengthResponse(Response.Status.OK, "audio/x-mpegurl", body).also {
+            cors(it)
+            it.addHeader("Content-Disposition", contentDisposition("${entry.name}.m3u", inline = false))
+            it.addHeader("Cache-Control", "no-store")
+        }
+    }
 
     // Live server/network facts surfaced in the web listing footer
     private fun serverFacts(): List<Pair<String, String>> {
