@@ -360,6 +360,8 @@ input[type=search]:focus{border-color:var(--ac)}
 .crumb .sep{color:var(--bd);margin:0 5px}
 .crumb .cur{color:var(--tx);font-weight:600}
 main{padding:12px;max-width:1200px;margin:0 auto}
+/* TV overscan: many TVs crop screen edges — add breathing room on large viewports */
+@media (min-width:1000px){main{padding:24px 40px}header{padding:16px 40px}}
 .tb{display:flex;gap:6px;margin-bottom:10px;align-items:center;flex-wrap:wrap}
 .st{font-size:11px;color:var(--mu);flex:1;min-width:80px}
 .sb{background:var(--sf);border:1px solid var(--bd);color:var(--tx);border-radius:7px;padding:6px 12px;font-size:12px;cursor:pointer;text-decoration:none;transition:border-color .12s,color .12s,background .12s}
@@ -371,6 +373,10 @@ main{padding:12px;max-width:1200px;margin:0 auto}
 .item{display:flex;align-items:stretch;background:var(--sf);border:1px solid var(--bd);border-radius:11px;overflow:hidden;transition:border-color .12s,background .12s,transform .08s;min-height:56px;box-shadow:var(--sh)}
 .item:hover{border-color:var(--ac);background:var(--hv)}
 .item:active{transform:scale(.995)}
+/* TV / D-pad remote: strong visible focus ring so you can see the cursor position */
+a:focus-visible,button:focus-visible,input:focus-visible{outline:none}
+.item:focus-within,.sb:focus-visible,.tgl:focus-visible,.crumb a:focus-visible{border-color:var(--ac);background:var(--hv);box-shadow:0 0 0 3px var(--ac)}
+.item-main:focus-visible,.btn-zip:focus-visible,.btn-dl:focus-visible{box-shadow:inset 0 0 0 3px var(--ac)}
 .item-main{flex:1;min-width:0;display:flex;align-items:center;gap:12px;padding:10px 12px;text-decoration:none;color:var(--tx)}
 .icon{font-size:22px;min-width:26px;text-align:center;flex-shrink:0}
 .info{flex:1;min-width:0}
@@ -425,6 +431,36 @@ else if(m==='n')arr=all.slice().sort(function(a,b){return grp(a)-grp(b)||a.datas
 else arr=all.slice().sort(function(a,b){return grp(a)-grp(b)||Number(b.dataset.size||0)-Number(a.dataset.size||0);});
 arr.forEach(function(e){ls.appendChild(e);});
 });});
+
+// ── TV / D-pad remote navigation ─────────────────────────────────────────
+// Arrow keys move focus spatially between focusable controls; Enter activates.
+// Works with Android TV browsers, Fire TV, and any keyboard.
+function focusables(){return Array.from(document.querySelectorAll('a[href],button,input[type=search]')).filter(function(el){return el.offsetParent!==null;});}
+function nav(dir){
+var els=focusables();if(!els.length)return;
+var cur=document.activeElement,ci=els.indexOf(cur);
+if(ci<0){els[0].focus();return;}
+var cr=cur.getBoundingClientRect(),best=null,bestD=1e9;
+els.forEach(function(el){if(el===cur)return;var r=el.getBoundingClientRect();
+var dx=(r.left+r.width/2)-(cr.left+cr.width/2),dy=(r.top+r.height/2)-(cr.top+cr.height/2);
+var ok=(dir==='up'&&dy<-4)||(dir==='down'&&dy>4)||(dir==='left'&&dx<-4)||(dir==='right'&&dx>4);
+if(!ok)return;
+// Prefer aligned candidates: weight the off-axis distance heavily.
+var d=(dir==='up'||dir==='down')?Math.abs(dy)+Math.abs(dx)*2:Math.abs(dx)+Math.abs(dy)*2;
+if(d<bestD){bestD=d;best=el;}});
+if(best){best.focus();best.scrollIntoView({block:'nearest'});}
+}
+document.addEventListener('keydown',function(e){
+var k=e.key;
+if(k==='ArrowUp'||k==='ArrowDown'||k==='ArrowLeft'||k==='ArrowRight'){
+if(document.activeElement===q&&(k==='ArrowLeft'||k==='ArrowRight'))return; // let caret move in search box
+e.preventDefault();nav(k.slice(5).toLowerCase());
+}else if(k==='Enter'&&document.activeElement&&document.activeElement.tagName==='A'){
+// Anchors already activate on Enter in most browsers; this is a safe fallback.
+}
+});
+// Auto-focus the first file/folder so a remote has an immediate cursor.
+(function(){var f=document.querySelector('.item .item-main');if(f)f.focus();})();
 })();
 </script></body></html>"""
 }
