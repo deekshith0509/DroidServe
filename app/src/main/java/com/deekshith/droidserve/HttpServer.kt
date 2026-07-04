@@ -110,6 +110,7 @@ class HttpServer(
         private const val QUEUE_CAPACITY = 512
         private const val KEEP_ALIVE_SEC = 30L
         private const val PIPE_BUFFER    = 2_097_152  // 2 MB pipe for ZIP streaming
+        private const val COOKIE_NAME    = "ds_session"
 
         // Inline MIME prefixes — precomputed set for O(1) lookup
         private val INLINE_PREFIXES = arrayOf("image/", "video/", "audio/", "text/")
@@ -132,7 +133,22 @@ class HttpServer(
     // Cached root doc ID — computed once
     private val rootDocId: String = DocumentsContract.getTreeDocumentId(rootUri)
 
+    // Per-server random session token. Handed out via Set-Cookie once Basic auth succeeds so
+    // that follow-up requests (crucially browser `download` anchors, which do NOT reliably
+    // resend the cached Authorization header) authenticate via the cookie instead. Fixes
+    // downloads failing on remote devices even though the listing loads.
+    private val sessionToken: String = run {
+        val bytes = ByteArray(24)
+        java.security.SecureRandom().nextBytes(bytes)
+        Base64.encodeToString(bytes, Base64.NO_WRAP or Base64.URL_SAFE)
+    }
+
     private val threadIndex = AtomicInteger(0)
+
+    // Active ZIP producer threads run OUTSIDE the request pool, so stop() must track and
+    // interrupt them explicitly — otherwise a large in-progress archive keeps reading SAF
+    // and holding resources after the server is "stopped".
+    private val zipThreads: MutableSet<Thread> = Collections.synchronizedSet(mutableSetOf())
 
     private val executor = ThreadPoolExecutor(
         CORE_THREADS, MAX_THREADS,
@@ -180,6 +196,8 @@ class HttpServer(
     override fun stop() {
         super.stop()
         DirectoryCache.clear()
+        // Interrupt any in-flight ZIP producers so they stop reading SAF and release the pipe.
+        synchronized(zipThreads) { zipThreads.toList() }.forEach { it.interrupt() }
         executor.shutdown()
         try { executor.awaitTermination(3, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
     }
@@ -214,11 +232,11 @@ class HttpServer(
         if (method != Method.GET && method != Method.HEAD)
             return errJson(Response.Status.METHOD_NOT_ALLOWED, "Method not allowed")
 
-        // Auth — constant-time compare on the configured password
+        // Auth — constant-time compare on the configured password (or a valid session cookie)
         if (!checkAuth(session)) return unauthorized()
-
-        // Count only authenticated, servable requests (not OPTIONS / 401 / preflight probes)
-        ServerStateHolder.incrementRequests()
+        // Mark that this request authenticated via Basic (not the cookie) so we can hand out
+        // the session cookie in the response — browser download anchors reuse it automatically.
+        val needsCookie = authNeeded() && !hasValidCookie(session)
 
         // NanoHTTPD already percent-decodes session.uri — decoding again double-decodes and
         // corrupts names containing '%' or '+'.
@@ -233,25 +251,37 @@ class HttpServer(
         val isZip  = options.allowZip && params["zip"]?.firstOrNull() == "1"
         val isDl   = options.allowDownload && params["dl"]?.firstOrNull() == "1"
 
-        return if (path.isEmpty()) {
+        // Count only authenticated requests that resolve to a real, servable resource
+        // (not OPTIONS / 401 / 403 / 404). Incrementing here also keeps the inactivity
+        // auto-stop timer from being reset by probes for missing paths.
+        val resp = if (path.isEmpty()) {
             // Root directory — no resolution needed
+            // HEAD must never emit a body, so it takes priority over ?zip=1.
+            ServerStateHolder.incrementRequests()
             val entries = listFast(rootDocId)
             when {
-                isZip                 -> zipResponse(entries, "download")
                 method == Method.HEAD -> dirHeadResponse()
+                isZip                 -> zipResponse(entries, "download")
                 else                  -> htmlResponse(entries, path, "root")
             }
         } else {
             val resolved = resolveFast(path)
                 ?: return errJson(Response.Status.NOT_FOUND, "Not found")
 
+            ServerStateHolder.incrementRequests()
             when {
-                resolved.isDirectory && isZip                 -> zipResponse(listFast(resolved.docId), resolved.name)
                 resolved.isDirectory && method == Method.HEAD -> dirHeadResponse()
+                resolved.isDirectory && isZip                 -> zipResponse(listFast(resolved.docId), resolved.name)
                 resolved.isDirectory                          -> htmlResponse(listFast(resolved.docId), path, resolved.name)
                 else                                          -> fileResponse(resolved, session, isDl)
             }
         }
+        // Hand out the session cookie once so download anchors (which may drop the
+        // Authorization header) stay authenticated for the life of this server.
+        if (needsCookie) resp.addHeader(
+            "Set-Cookie", "$COOKIE_NAME=$sessionToken; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
+        )
+        return resp
     }
 
     // HEAD on a directory: report headers without building the listing body
@@ -368,9 +398,38 @@ class HttpServer(
         }
 
         if (pfd == null) {
-            // Fallback — stream via ContentResolver (no descriptor / page-cache path)
+            // Fallback — stream via ContentResolver (no descriptor / page-cache path).
+            // Honor a single byte-range by skipping to the start and capping the length,
+            // so seeking still works when a provider gives us no descriptor.
             val stream = context.contentResolver.openInputStream(entry.uri)
                 ?: return errJson(Response.Status.INTERNAL_ERROR, "Cannot open file")
+            val range = session.headers["range"]?.takeUnless { it.contains(',') }
+            val parsed = if (range != null && size > 0) parseByteRange(range, size) else null
+            if (parsed != null) {
+                val (start, end) = parsed
+                val length = end - start + 1
+                var skipped = 0L
+                try {
+                    while (skipped < start) {
+                        val s = stream.skip(start - skipped)
+                        if (s <= 0) break
+                        skipped += s
+                    }
+                } catch (_: Exception) {}
+                if (skipped < start) {
+                    try { stream.close() } catch (_: Exception) {}
+                    return errJson(Response.Status.INTERNAL_ERROR, "Cannot seek file")
+                }
+                return newFixedLengthResponse(
+                    Response.Status.PARTIAL_CONTENT, mime, CappedStream(stream, length), length
+                ).also {
+                    it.addHeader("Content-Range", "bytes $start-$end/$size")
+                    it.addHeader("Content-Disposition", disp)
+                    it.addHeader("Accept-Ranges", "bytes")
+                    it.addHeader("Cache-Control", "no-store")
+                    cors(it)
+                }
+            }
             return newFixedLengthResponse(Response.Status.OK, mime, stream, size).also {
                 it.addHeader("Content-Disposition", disp)
                 it.addHeader("Accept-Ranges", "bytes")
@@ -438,11 +497,17 @@ class HttpServer(
         val pipedOut = PipedOutputStream(pipedIn)
         // Dedicated thread — NOT the request pool. With CallerRunsPolicy a saturated pool would
         // run the producer on the consumer thread and deadlock on the pipe buffer.
-        Thread({
+        // Registered in zipThreads so stop() can interrupt it mid-stream.
+        val t = Thread({
             try { FileUtils.zipEntries(context, entries, dirName, pipedOut) { listFast(it.docId) } }
             catch (_: Exception) {}
-            finally { try { pipedOut.close() } catch (_: Exception) {} }
-        }, "ds-zip").apply { isDaemon = true; start() }
+            finally {
+                try { pipedOut.close() } catch (_: Exception) {}
+                zipThreads.remove(Thread.currentThread())
+            }
+        }, "ds-zip").apply { isDaemon = true }
+        zipThreads.add(t)
+        t.start()
         return newChunkedResponse(Response.Status.OK, "application/zip", pipedIn).also {
             it.addHeader("Content-Disposition", contentDisposition("$dirName.zip", inline = false))
             it.addHeader("Cache-Control", "no-store")
@@ -454,7 +519,11 @@ class HttpServer(
     // Auth — parse "user:password" properly, constant-time compare (any username allowed)
     // -----------------------------------------------------------------------
     private fun checkAuth(session: IHTTPSession): Boolean {
-        val expectedPass = passwordBytes ?: return true   // No password configured → open
+        // Auth engages if EITHER a username or a password is configured. Previously a
+        // username-only config left the server fully open while the UI reported it as
+        // protected — a misleading security hole.
+        if (!authNeeded()) return true                       // No credentials → open
+        if (hasValidCookie(session)) return true             // Prior successful login
         val h = session.headers["authorization"] ?: return false
         if (!h.regionMatches(0, "Basic ", 0, 6, ignoreCase = true)) return false   // scheme is case-insensitive
         return try {
@@ -465,7 +534,8 @@ class HttpServer(
             // Everything after the first ':' is the password (passwords may contain ':')
             val pass = decoded.copyOfRange(colon + 1, decoded.size)
             val userOk = usernameBytes?.let { constantTimeEquals(user, it) } ?: true  // null = any username
-            userOk and constantTimeEquals(pass, expectedPass)   // non-short-circuit keeps timing uniform
+            val passOk = passwordBytes?.let { constantTimeEquals(pass, it) } ?: true  // null = any password
+            userOk and passOk   // non-short-circuit keeps timing uniform
         } catch (_: Exception) { false }
     }
 
@@ -474,6 +544,16 @@ class HttpServer(
         var diff = 0
         for (i in a.indices) diff = diff or (a[i].toInt() xor b[i].toInt())
         return diff == 0
+    }
+
+    // True when credentials are configured, so auth must be enforced.
+    private fun authNeeded(): Boolean = passwordBytes != null || usernameBytes != null
+
+    // Validate the DroidServe session cookie against this server's random token.
+    private fun hasValidCookie(session: IHTTPSession): Boolean {
+        val header = session.headers["cookie"] ?: return false
+        val expected = "$COOKIE_NAME=$sessionToken"
+        return header.split(';').any { it.trim() == expected }
     }
 
     private fun unauthorized(): Response =
@@ -554,6 +634,28 @@ class HttpServer(
             try { fis.close() } catch (_: Exception) {}
             try { pfd.close() } catch (_: Exception) {}
         }
+    }
+
+    /** Byte-limited wrapper around an arbitrary InputStream (range on the no-descriptor path). */
+    private class CappedStream(
+        private val src: InputStream,
+        private var remaining: Long
+    ) : InputStream() {
+        override fun read(): Int {
+            if (remaining <= 0) return -1
+            val b = src.read()
+            if (b >= 0) remaining--
+            return b
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (remaining <= 0) return -1
+            val n = src.read(b, off, minOf(len.toLong(), remaining).toInt())
+            if (n > 0) remaining -= n
+            return n
+        }
+
+        override fun close() { try { src.close() } catch (_: Exception) {} }
     }
 }
 
