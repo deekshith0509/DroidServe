@@ -162,6 +162,25 @@ fun DroidServeApp() {
         ) notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
+    // ── Reconcile UI state with the real service on launch / resume ─────────────
+    // If Android recreated the process while the foreground service kept running, the
+    // in-memory ServerStateHolder flag is false even though the server is alive. Ask the
+    // service to re-publish its true state (or shut down if it's a zombie).
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_START &&
+                !ServerStateHolder.isRunning.value && isServiceRunning(context)
+            ) {
+                context.startService(Intent(context, ServerForegroundService::class.java).apply {
+                    action = ServerForegroundService.ACTION_SYNC
+                })
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     // ── Battery-optimization exemption ─────────────────────────────────────────
     // Aggressive OEM ROMs (Infinix/XOS, MIUI, etc.) freeze background processes and kill
     // the socket even with a foreground service, so downloads stall once the app is
@@ -549,6 +568,20 @@ private fun stopServer(context: Context) {
     context.startService(Intent(context, ServerForegroundService::class.java).apply {
         action = ServerForegroundService.ACTION_STOP
     })
+}
+
+// True if our foreground service is actually alive right now. Used to reconcile the UI
+// state on launch/resume: the in-memory ServerStateHolder flag is lost if Android kills
+// and recreates the process while the service keeps running, which previously left the
+// notification showing "Running" while the reopened app showed "Start Server".
+@Suppress("DEPRECATION")  // getRunningServices is deprecated but still valid for OUR OWN service
+private fun isServiceRunning(context: Context): Boolean {
+    val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+    return try {
+        am.getRunningServices(Int.MAX_VALUE).any {
+            it.service.className == ServerForegroundService::class.java.name
+        }
+    } catch (_: Exception) { false }
 }
 
 // ── Battery-optimization exemption ─────────────────────────────────────────────

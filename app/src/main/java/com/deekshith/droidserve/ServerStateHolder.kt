@@ -47,6 +47,15 @@ object ServerStateHolder {
         _ip.value = ""
     }
 
+    // Re-publish running state after a process recreation WITHOUT resetting counters/uptime.
+    // Used by ACTION_SYNC when the service is alive but the in-memory flag was lost.
+    fun resync(ip: String, port: Int) {
+        _ip.value = ip
+        _port.value = port
+        if (startedAtElapsed == 0L) startedAtElapsed = SystemClock.elapsedRealtime()
+        _isRunning.value = true
+    }
+
     fun incrementRequests(): Int {
         val n = counter.incrementAndGet()
         lastActivityElapsed = SystemClock.elapsedRealtime()
