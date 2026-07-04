@@ -710,6 +710,7 @@ class ServerForegroundService : Service() {
 
         const val ACTION_START        = "ACTION_START"
         const val ACTION_STOP         = "ACTION_STOP"
+        const val ACTION_SYNC         = "ACTION_SYNC"   // reconcile UI state after process recreation
         const val EXTRA_URI           = "extra_uri"
         const val EXTRA_PORT          = "extra_port"
         const val EXTRA_PASSWORD      = "extra_password"
@@ -752,6 +753,21 @@ class ServerForegroundService : Service() {
             // Stop arrives via startService / notification PendingIntent — no startForegroundService
             // contract to satisfy, so do NOT promote to foreground here (avoids a notification flash).
             ACTION_STOP  -> { stopAll(); return START_NOT_STICKY }
+            ACTION_SYNC  -> {
+                // The UI reopened and found this service alive but its in-memory state lost
+                // (process was recreated). If we hold a live server, re-publish its state so
+                // the UI flips to "Running". If we don't, the service is a zombie — stop it so
+                // the notification and UI agree on "stopped".
+                val srv = synchronized(lock) { httpServer }
+                if (srv != null && !stopped) {
+                    val ip = NetworkUtils.getLocalIpAddress()
+                    ServerStateHolder.resync(ip, srv.listeningPort)
+                    startForegroundCompat(buildNotif("Running — $ip:${srv.listeningPort}", "http://$ip:${srv.listeningPort}"))
+                } else {
+                    stopAll()
+                }
+                return START_STICKY
+            }
             ACTION_START -> {
                 stopped = false
                 startForegroundCompat(buildNotif("Starting…", ""))

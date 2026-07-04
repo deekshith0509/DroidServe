@@ -76,6 +76,7 @@ dependencies {
     // HTTP server
     implementation("org.nanohttpd:nanohttpd:2.3.1")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")
     // QR generation
     implementation("com.google.zxing:core:3.5.3")
 
