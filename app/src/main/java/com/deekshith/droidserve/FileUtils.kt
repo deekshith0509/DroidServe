@@ -130,10 +130,15 @@ object FileUtils {
         title: String = "DroidServe",
         allowZip: Boolean = true,
         allowDownload: Boolean = true,
-        serverFacts: List<Pair<String, String>> = emptyList()
+        serverFacts: List<Pair<String, String>> = emptyList(),
+        authToken: String? = null
     ): String {
         val sb = StringBuilder(4096 + entries.size * 256)
         val safeTitle = escHtml(title.ifBlank { "DroidServe" })
+        // Query suffix that carries the auth token so external apps (VLC/MX) can stream
+        // without a cookie/Basic header. Empty when auth is off.
+        val tokQ = if (authToken != null) "?tok=${encodeSeg(authToken)}" else ""
+        val tokAmp = if (authToken != null) "&tok=${encodeSeg(authToken)}" else ""
 
         sb.append(HTML_HEAD_1)
         sb.append(safeTitle); sb.append(" — "); sb.append(escHtml(dirName))
@@ -151,7 +156,7 @@ object FileUtils {
         if (allowZip) {
             val here = encodePath(urlPath)
             val zipHref = if (here.isEmpty()) "/?zip=1" else "/$here?zip=1"
-            sb.append("""<a class="sb zipall" href="""").append(zipHref)
+            sb.append("""<a class="sb zipall" href="""").append(zipHref).append(tokAmp)
             sb.append("""">⬇ Folder ZIP</a>""")
         }
         sb.append("""<button class="sb on" data-s="d">Default</button>""")
@@ -183,21 +188,22 @@ object FileUtils {
                 sb.append("""<div class="info"><div class="name">""").append(escHtml(eName))
                 sb.append("""</div><div class="meta">Directory</div></div></a>""")
                 if (allowZip) {
-                    sb.append("""<a class="btn-zip" href="/""").append(href).append("""?zip=1">⬇ ZIP</a>""")
+                    sb.append("""<a class="btn-zip" href="/""").append(href).append("""?zip=1""").append(tokAmp).append(""">⬇ ZIP</a>""")
                 }
                 sb.append("</div>")
             } else {
                 val date = formatDate(e.lastModified)
                 val meta = if (date.isEmpty()) formatSize(e.size) else "${formatSize(e.size)} · $date"
                 sb.append("""<div class="item file" data-name="${escHtml(eName)}" data-size="${e.size}">""")
-                sb.append("""<a class="item-main" href="/""").append(href).append("""">""")
+                // Open link carries the token so external players (VLC/MX) can stream directly.
+                sb.append("""<a class="item-main" href="/""").append(href).append(tokQ).append("""">""")
                 sb.append("""<span class="icon">""").append(fileIcon(eName)).append("</span>")
                 sb.append("""<div class="info"><div class="name">""").append(escHtml(eName))
                 sb.append("""</div><div class="meta">""").append(escHtml(meta))
                 sb.append("</div></div></a>")
                 if (allowDownload) {
                     sb.append("""<a class="btn-dl" href="/""").append(href)
-                    sb.append("""?dl=1" download="${escHtml(eName)}" title="Download">⬇</a>""")
+                    sb.append("""?dl=1""").append(tokAmp).append("""" download="${escHtml(eName)}" title="Download">⬇</a>""")
                 }
                 sb.append("</div>")
             }
