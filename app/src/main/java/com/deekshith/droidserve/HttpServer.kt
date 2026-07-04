@@ -727,6 +727,7 @@ class ServerForegroundService : Service() {
     private var httpServer: HttpServer? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var keepAlive: SilentAudioKeepAlive? = null
     private var autoStopJob: Job? = null
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -860,12 +861,20 @@ class ServerForegroundService : Service() {
                 .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "DroidServe::wifi")
                 .also { it.setReferenceCounted(false); it.acquire() }
         }
+        // Aggressive OEM ROMs (Transsion XOS/PowerGenie, MIUI, etc.) freeze a backgrounded
+        // process's threads even with a foreground service + wakelock, stalling downloads
+        // until the app is reopened. An always-playing silent audio track keeps the process
+        // in a "perceptible/playing" state the freezer will not suspend.
+        if (keepAlive == null) {
+            keepAlive = SilentAudioKeepAlive().also { try { it.start() } catch (_: Exception) {} }
+        }
     }
 
     private fun releaseLocks() {
         try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
         try { wifiLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
-        wakeLock = null; wifiLock = null
+        try { keepAlive?.stop() } catch (_: Exception) {}
+        wakeLock = null; wifiLock = null; keepAlive = null
     }
 
     private fun startForegroundCompat(n: Notification) {
@@ -948,5 +957,63 @@ class ServerForegroundService : Service() {
                 title         = p.getString(KEY_TITLE, "DroidServe")?.ifBlank { "DroidServe" } ?: "DroidServe"
             )
         )
+    }
+}
+
+// ============================================================================
+// SilentAudioKeepAlive — plays an inaudible looping tone via AudioTrack.
+// On aggressive OEM ROMs (Transsion XOS / PowerGenie, MIUI, etc.) a foreground
+// service and wakelock are NOT enough: the freezer still suspends the process's
+// threads once it is backgrounded, stalling in-flight HTTP transfers until the
+// app is reopened. An actively-playing audio track marks the process as
+// "playing/perceptible", which the freezer leaves running.
+// ============================================================================
+private class SilentAudioKeepAlive {
+    @Volatile private var track: android.media.AudioTrack? = null
+
+    fun start() {
+        if (track != null) return
+        val sampleRate = 8_000
+        val minBuf = android.media.AudioTrack.getMinBufferSize(
+            sampleRate,
+            android.media.AudioFormat.CHANNEL_OUT_MONO,
+            android.media.AudioFormat.ENCODING_PCM_16BIT
+        ).coerceAtLeast(1_024)
+
+        val attrs = android.media.AudioAttributes.Builder()
+            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+            .build()
+        val format = android.media.AudioFormat.Builder()
+            .setSampleRate(sampleRate)
+            .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
+            .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+            .build()
+
+        val t = android.media.AudioTrack(
+            attrs, format, minBuf,
+            android.media.AudioTrack.MODE_STREAM,
+            android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
+        )
+        // Fully silent: zero volume + zero-filled PCM. The track still counts as active.
+        try { t.setVolume(0f) } catch (_: Exception) {}
+        t.play()
+        track = t
+
+        Thread({
+            val silence = ShortArray(minBuf / 2)   // all zeros = silence
+            val cur = track
+            while (cur != null && cur.playState == android.media.AudioTrack.PLAYSTATE_PLAYING) {
+                val n = cur.write(silence, 0, silence.size)
+                if (n < 0) break   // error — bail out
+            }
+        }, "ds-keepalive").apply { isDaemon = true }.start()
+    }
+
+    fun stop() {
+        val t = track
+        track = null
+        try { t?.stop() } catch (_: Exception) {}
+        try { t?.release() } catch (_: Exception) {}
     }
 }
