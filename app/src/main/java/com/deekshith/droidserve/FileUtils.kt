@@ -54,13 +54,25 @@ object FileUtils {
         "woff2" to "font/woff2"
     )
 
+    // Text-like extensions that browsers should render inline (not download). Kept broad so
+    // source files, configs, logs, etc. open as raw text in the browser.
+    private val TEXT_EXTS = hashSetOf(
+        "txt","md","markdown","log","csv","tsv","ini","conf","cfg","env","properties",
+        "yaml","yml","toml","json","xml","js","mjs","ts","tsx","jsx","css","scss","less",
+        "html","htm","kt","kts","java","py","rb","go","rs","c","h","cpp","hpp","cc","cs",
+        "sh","bash","zsh","bat","ps1","sql","gradle","dockerfile","gitignore","lock","diff","patch"
+    )
+
     fun getMimeType(fileName: String): String {
         val dot = fileName.lastIndexOf('.')
-        if (dot < 0) return "application/octet-stream"
+        // Extensionless files (README, Makefile, LICENSE, etc.) are almost always text —
+        // serve them as text/plain so they display in-browser instead of downloading.
+        if (dot < 0) return "text/plain"
         val ext = fileName.substring(dot + 1).lowercase()
-        return MIME_MAP[ext]
-            ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
-            ?: "application/octet-stream"
+        MIME_MAP[ext]?.let { return it }
+        if (ext in TEXT_EXTS) return "text/plain"
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+            ?: "text/plain"   // Unknown extension → treat as text so it renders, not downloads
     }
 
     fun isHiddenOrSystem(name: String): Boolean =
@@ -194,13 +206,18 @@ object FileUtils {
             } else {
                 val date = formatDate(e.lastModified)
                 val meta = if (date.isEmpty()) formatSize(e.size) else "${formatSize(e.size)} · $date"
-                sb.append("""<div class="item file" data-name="${escHtml(eName)}" data-size="${e.size}">""")
-                // Open link carries the token so external players (VLC/MX) can stream directly.
+                val mime = getMimeType(eName)
+                // Every file carries its mime so client JS can offer "open with" (Android chooser).
+                sb.append("""<div class="item file" data-name="${escHtml(eName)}" data-size="${e.size}" data-mime="${escHtml(mime)}">""")
+                // Open link carries the token so external apps can stream/read directly.
                 sb.append("""<a class="item-main" href="/""").append(href).append(tokQ).append("""">""")
                 sb.append("""<span class="icon">""").append(fileIcon(eName)).append("</span>")
                 sb.append("""<div class="info"><div class="name">""").append(escHtml(eName))
                 sb.append("""</div><div class="meta">""").append(escHtml(meta))
                 sb.append("</div></div></a>")
+                // Download button pinned to the right edge of the row. Always shown when
+                // downloads are allowed; it's the explicit "save file" action, separate from
+                // tapping the name (which opens the file / offers an app chooser).
                 if (allowDownload) {
                     sb.append("""<a class="btn-dl" href="/""").append(href)
                     sb.append("""?dl=1""").append(tokAmp).append("""" download="${escHtml(eName)}" title="Download">⬇</a>""")
@@ -420,6 +437,32 @@ upd();
 var t;q.addEventListener('input',function(){clearTimeout(t);t=setTimeout(upd,60);});
 // '/' focuses the filter box for quick keyboard search
 document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});
+
+// ── Open videos/audio in a real player instead of downloading ────────────
+// Browsers can't play .mkv/.avi inline, so they'd download them. On Chromium-based
+// Android browsers we hand the stream URL to an app chooser via an intent:// URL so it
+// plays in VLC/MX/etc. Firefox/Iceraven don't support intent:// — there we just let the
+// normal link proceed (inline where possible, download otherwise), avoiding a crash.
+var ua=navigator.userAgent;
+var isAndroid=/Android/i.test(ua);
+var isFirefox=/Firefox|FxiOS|Fennec/i.test(ua);
+var canIntent=isAndroid&&!isFirefox;   // intent:// is a Chromium feature
+function openWith(href,mime){
+var a=document.createElement('a');a.href=href;var abs=a.href;
+var m=abs.match(/^(https?):\/\/(.*)$/i);if(!m){window.location.href=abs;return;}
+// package is intentionally omitted so Android shows the app chooser for this mime type.
+var intent='intent://'+m[2]+'#Intent;scheme='+m[1]+';action=android.intent.action.VIEW;type='+mime+';end';
+window.location.href=intent;
+}
+document.querySelectorAll('.item[data-mime] .item-main').forEach(function(a){
+a.addEventListener('click',function(e){
+if(!canIntent)return;                        // laptops/TVs/Firefox: normal behaviour
+var mime=a.closest('.item').dataset.mime||'';
+// Only hijack media the browser can't render itself; images/text open inline fine.
+if(!/^video\/|^audio\//.test(mime))return;
+e.preventDefault();
+openWith(a.getAttribute('href'),mime);
+});});
 document.querySelectorAll('.sb[data-s]').forEach(function(b){
 b.addEventListener('click',function(){
 document.querySelectorAll('.sb[data-s]').forEach(function(x){x.classList.remove('on');});b.classList.add('on');
