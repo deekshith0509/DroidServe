@@ -213,7 +213,31 @@ fun DroidServeApp() {
                 )
             )
         },
-        snackbarHost = { SnackbarHost(snackbar) }
+        snackbarHost = { SnackbarHost(snackbar) },
+        bottomBar = {
+            // Sticky primary action — always reachable without scrolling the long settings list.
+            Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 8.dp) {
+                Button(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                        .height(54.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    enabled = isRunning || selectedUri != null,
+                    onClick = {
+                        if (isRunning) stopServer(context)
+                        else { startAttempted = true; beginStart() }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+                ) {
+                    Icon(if (isRunning) Icons.Default.Stop else Icons.Default.PlayArrow, null, Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (isRunning) "Stop Server" else "Start Server", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
     ) { pad ->
         Column(
             modifier = Modifier
@@ -413,20 +437,6 @@ fun DroidServeApp() {
             // ── Live request log ────────────────────────────────────────────────
             LiveLogCard(logEntries) { ServerLog.clear() }
 
-            // ── Start / Stop ─────────────────────────────────────────────────────
-            Button(
-                modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp),
-                onClick = {
-                    if (isRunning) stopServer(context)
-                    else { startAttempted = true; beginStart() }
-                },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
-            ) {
-                Icon(if (isRunning) Icons.Default.Stop else Icons.Default.PlayArrow, null, Modifier.size(20.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(if (isRunning) "Stop Server" else "Start Server", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            }
             Spacer(Modifier.height(8.dp))
         }
     }
