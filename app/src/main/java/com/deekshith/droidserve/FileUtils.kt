@@ -412,9 +412,11 @@ document.querySelectorAll('.sb[data-s]').forEach(function(b){
 b.addEventListener('click',function(){
 document.querySelectorAll('.sb[data-s]').forEach(function(x){x.classList.remove('on');});b.classList.add('on');
 var m=b.dataset.s,arr;
+// Folders always stay grouped before files; the chosen order applies within each group.
+function grp(e){return e.classList.contains('dir')?0:1;}
 if(m==='d')arr=orig.slice();
-else if(m==='n')arr=all.slice().sort(function(a,b){return a.dataset.name.localeCompare(b.dataset.name,undefined,{sensitivity:'base'});});
-else arr=all.slice().sort(function(a,b){return Number(b.dataset.size||0)-Number(a.dataset.size||0);});
+else if(m==='n')arr=all.slice().sort(function(a,b){return grp(a)-grp(b)||a.dataset.name.localeCompare(b.dataset.name,undefined,{sensitivity:'base'});});
+else arr=all.slice().sort(function(a,b){return grp(a)-grp(b)||Number(b.dataset.size||0)-Number(a.dataset.size||0);});
 arr.forEach(function(e){ls.appendChild(e);});
 });});
 })();
