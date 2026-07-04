@@ -360,7 +360,10 @@ class HttpServer(
             Response.Status.OK, "text/html; charset=utf-8",
             FileUtils.buildHtml(
                 entries, urlPath, dirName,
-                options.title, options.allowZip, options.allowDownload, serverFacts()
+                options.title, options.allowZip, options.allowDownload, serverFacts(),
+                // Only embed the token in links when auth is enforced; external players
+                // (VLC/MX) carry it in the URL since they send no cookie/Basic header.
+                authToken = if (authNeeded()) sessionToken else null
             )
         ).also { cors(it); it.addHeader("Cache-Control", "no-store") }
 
@@ -524,6 +527,7 @@ class HttpServer(
         // protected — a misleading security hole.
         if (!authNeeded()) return true                       // No credentials → open
         if (hasValidCookie(session)) return true             // Prior successful login
+        if (hasValidTokenParam(session)) return true         // ?tok= for external players (VLC/MX)
         val h = session.headers["authorization"] ?: return false
         if (!h.regionMatches(0, "Basic ", 0, 6, ignoreCase = true)) return false   // scheme is case-insensitive
         return try {
@@ -554,6 +558,14 @@ class HttpServer(
         val header = session.headers["cookie"] ?: return false
         val expected = "$COOKIE_NAME=$sessionToken"
         return header.split(';').any { it.trim() == expected }
+    }
+
+    // Validate a ?tok=<sessionToken> query param. External players (VLC, MX Player) that open
+    // a media URL send neither the browser cookie nor the Authorization header, so the token
+    // in the URL is the only credential that travels with the link.
+    private fun hasValidTokenParam(session: IHTTPSession): Boolean {
+        val tok = session.parameters["tok"]?.firstOrNull() ?: return false
+        return constantTimeEquals(tok.toByteArray(Charsets.UTF_8), sessionToken.toByteArray(Charsets.UTF_8))
     }
 
     private fun unauthorized(): Response =
