@@ -30,12 +30,15 @@ No internet connection required. No data leaves your local network. No accounts.
 
 | Feature | Detail |
 |---|---|
-| **Instant file browser** | Clean dark web UI with search, sort, file icons |
-| **Stream media** | Video and audio play directly in the browser via HTTP range requests |
-| **Download anything** | Every file has a ⬇ download button; folders download as ZIP |
+| **Instant file browser** | Clean web UI with live search, grouped sort (folders first), clickable breadcrumbs, and file icons |
+| **Light / dark theme** | One-tap theme toggle in the web UI, remembered per device |
+| **Stream media** | Video and audio play in-browser via HTTP range requests; on Android, tapping opens the OS app chooser (VLC/MX) |
+| **Inline preview** | Images, PDFs, text, code, and extensionless files render directly in the browser |
+| **Download anything** | Every file row has a ⬇ download button; folders download as ZIP |
+| **TV & remote friendly** | Arrow-key spatial navigation, visible focus rings, and overscan padding for Android TV / D-pad browsers |
+| **Reliable in background** | Foreground service + CPU/Wi-Fi locks + silent keep-alive defeat aggressive OEM freezers (Transsion XOS, MIUI, etc.) so transfers never stall |
 | **QR code** | Auto-generated QR — point another phone's camera to connect instantly |
-| **Password protection** | Optional HTTP Basic Auth to lock access |
-| **Foreground service** | Server keeps running while you use other apps |
+| **Password protection** | Optional HTTP Basic Auth, session cookie, and per-link token so downloads/streams stay authorized across browsers and external players |
 | **System restart survival** | Server auto-restarts if Android kills and recreates the service |
 | **CORS headers** | All responses include proper CORS headers for cross-origin use |
 | **HEAD request support** | Proper HEAD handling for clients that probe before downloading |
@@ -166,11 +169,12 @@ dependencies {
 | **QR Code** | Scan the QR shown in the app with any phone camera |
 | **Copy/Share** | Use the Copy or Share buttons to send the URL |
 
-### Downloading Files
+### Downloading & Opening Files
 
-- **Click a filename** → opens/streams in browser (images, video, audio, PDF)
-- **Click ⬇** → forces download to your device
+- **Click a filename** → opens/streams in the browser (images, video, audio, PDF, text). On Android, video/audio open in the system app chooser (VLC, MX Player, etc.)
+- **Click ⬇** → forces download to your device (always available)
 - **Click ⬇ ZIP** on a folder → downloads entire folder as a `.zip`
+- **On a TV / with a remote** → use the arrow keys to move between items and press OK to open
 
 ### Password Protection
 
