@@ -104,7 +104,11 @@ object FileUtils {
                 stream = context.contentResolver.openInputStream(e.uri)
                 stream?.let { inp ->
                     var n: Int
-                    while (inp.read(buf).also { n = it } != -1) zos.write(buf, 0, n)
+                    while (inp.read(buf).also { n = it } != -1) {
+                        // Bail out promptly if the server was stopped mid-archive.
+                        if (Thread.currentThread().isInterrupted) throw InterruptedException()
+                        zos.write(buf, 0, n)
+                    }
                 }
             } finally {
                 try { stream?.close() } catch (_: Exception) {}

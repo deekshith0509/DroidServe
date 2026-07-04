@@ -162,6 +162,15 @@ fun DroidServeApp() {
         ) notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
+    // ── Battery-optimization exemption ─────────────────────────────────────────
+    // Aggressive OEM ROMs (Infinix/XOS, MIUI, etc.) freeze background processes and kill
+    // the socket even with a foreground service, so downloads stall once the app is
+    // backgrounded. Requesting the exemption keeps the server responsive.
+    var batteryExempt by remember { mutableStateOf(isBatteryExempt(context)) }
+    val batteryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        batteryExempt = isBatteryExempt(context)
+    }
+
     // ── Auto-start (F2) ────────────────────────────────────────────────────────
     var autoStartDone by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
@@ -307,6 +316,26 @@ fun DroidServeApp() {
                             enabled = !isRunning,
                             label = { Text(label, fontSize = 12.sp) }
                         )
+                    }
+                }
+            }
+
+            // ── Battery warning (aggressive OEM ROMs freeze the server) ──────────
+            AnimatedVisibility(visible = !batteryExempt) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                ) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Allow background running", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                            Text("Without this the server may freeze when the app is in the background.",
+                                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = { requestBatteryExemption(context, batteryLauncher) }) { Text("Fix") }
                     }
                 }
             }
@@ -510,6 +539,29 @@ private fun stopServer(context: Context) {
     context.startService(Intent(context, ServerForegroundService::class.java).apply {
         action = ServerForegroundService.ACTION_STOP
     })
+}
+
+// ── Battery-optimization exemption ─────────────────────────────────────────────
+private fun isBatteryExempt(context: Context): Boolean {
+    val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+    return pm.isIgnoringBatteryOptimizations(context.packageName)
+}
+
+@android.annotation.SuppressLint("BatteryLife")
+private fun requestBatteryExemption(
+    context: Context,
+    launcher: androidx.activity.result.ActivityResultLauncher<Intent>
+) {
+    try {
+        launcher.launch(Intent(
+            android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            Uri.parse("package:${context.packageName}")
+        ))
+    } catch (_: Exception) {
+        // Fall back to the generic battery-optimization settings list if the direct intent is blocked.
+        try { context.startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+        catch (_: Exception) {}
+    }
 }
 
 private fun shareQr(context: Context, bmp: Bitmap) {
