@@ -40,3 +40,10 @@ data class Listing(
     val path: String,
     val entries: List<RemoteEntry>
 )
+
+/** A real-time command pushed from the phone (controller) to this TV (player). */
+data class CastCommand(
+    val action: String,
+    val url: String,
+    val mime: String
+)

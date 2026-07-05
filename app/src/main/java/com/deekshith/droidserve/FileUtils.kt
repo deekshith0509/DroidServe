@@ -218,6 +218,14 @@ object FileUtils {
                 sb.append("""<div class="info"><div class="name">""").append(escHtml(eName))
                 sb.append("""</div><div class="meta">""").append(escHtml(meta))
                 sb.append("</div></div></a>")
+                // "Play on TV" — only for streamable media. Casts this file to a DroidServe TV
+                // app on the same network via /api/cast; the TV opens it in its own native
+                // player (VLC/MX/etc). data-path carries the encoded relative path.
+                if (mime.startsWith("video/") || mime.startsWith("audio/")) {
+                    val rawPath = if (urlPath.isEmpty()) eName else "${urlPath.trimEnd('/')}/$eName"
+                    sb.append("""<button class="btn-tv" data-path="""").append('"').append(escHtml(rawPath))
+                    sb.append("""" title="Play on TV">📺</button>""")
+                }
                 // Download button pinned to the right edge — always available so users can
                 // save any file directly, independent of the inline open/preview behaviour.
                 sb.append("""<a class="btn-dl" href="/""").append(href)
@@ -400,11 +408,15 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:none}
 .info{flex:1;min-width:0}
 .name{font-weight:500;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.3}
 .meta{font-size:11px;color:var(--mu);margin-top:2px}
-.btn-zip,.btn-dl{flex-shrink:0;display:flex;align-items:center;justify-content:center;padding:0 14px;font-weight:700;text-decoration:none;border-left:1px solid var(--bd);white-space:nowrap;cursor:pointer;transition:filter .12s}
+.btn-zip,.btn-dl,.btn-tv{flex-shrink:0;display:flex;align-items:center;justify-content:center;padding:0 14px;font-weight:700;text-decoration:none;border-left:1px solid var(--bd);white-space:nowrap;cursor:pointer;transition:filter .12s}
 .btn-zip{background:var(--gz);color:#fff;min-width:66px;font-size:12px}
 .btn-zip:hover{filter:brightness(1.15)}
 .btn-dl{background:var(--dl);color:#fff;min-width:48px;font-size:18px}
 .btn-dl:hover{filter:brightness(1.15)}
+.btn-tv{background:var(--sf2);color:var(--tx);min-width:48px;font-size:17px;border:none;border-left:1px solid var(--bd);cursor:pointer}
+.btn-tv:hover{filter:brightness(1.2);color:var(--ac)}
+.btn-tv.ok{background:var(--dl);color:#fff}
+.btn-tv.err{background:#ef4444;color:#fff}
 .empty{text-align:center;color:var(--mu);padding:60px 20px;font-size:14px}
 .info-foot{margin-top:16px;padding:14px;border:1px solid var(--bd);border-radius:11px;background:var(--sf);font-size:11px;color:var(--mu);line-height:1.7;word-break:break-all;box-shadow:var(--sh)}
 .info-h{color:var(--ac);font-weight:700;margin-bottom:6px;font-size:12px}
@@ -469,6 +481,24 @@ it+=';S.browser_fallback_url='+fb+';end';
 window.location.href=it;
 });});
 }
+
+// ── Play on TV: push this media file to a DroidServe TV app on the network ──
+// POSTs the file's relative path to /api/cast; the phone resolves it to an absolute
+// token-carrying URL and hands it to the TV, which opens it in its own native player.
+document.querySelectorAll('.btn-tv[data-path]').forEach(function(b){
+b.addEventListener('click',function(e){
+e.preventDefault();e.stopPropagation();
+var p=b.getAttribute('data-path');
+b.disabled=true;
+fetch('/api/cast?path='+encodeURIComponent(p),{credentials:'same-origin'})
+.then(function(r){return r.ok;})
+.then(function(ok){
+b.classList.add(ok?'ok':'err');b.textContent=ok?'✅':'⚠️';
+setTimeout(function(){b.classList.remove('ok','err');b.textContent='📺';b.disabled=false;},1500);
+})
+.catch(function(){b.classList.add('err');b.textContent='⚠️';
+setTimeout(function(){b.classList.remove('err');b.textContent='📺';b.disabled=false;},1500);});
+});});
 document.querySelectorAll('.sb[data-s]').forEach(function(b){
 b.addEventListener('click',function(){
 document.querySelectorAll('.sb[data-s]').forEach(function(x){x.classList.remove('on');});b.classList.add('on');

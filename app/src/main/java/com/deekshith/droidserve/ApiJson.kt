@@ -75,4 +75,13 @@ object ApiJson {
             append("]}")
         }
     }
+
+    /** Serialize a cast command for the TV long-poll response. */
+    fun castCommand(action: String, url: String, mime: String): String = buildString {
+        append('{')
+        append("\"action\":\"").append(escape(action)).append("\",")
+        append("\"url\":\"").append(escape(url)).append("\",")
+        append("\"mime\":\"").append(escape(mime)).append('"')
+        append('}')
+    }
 }

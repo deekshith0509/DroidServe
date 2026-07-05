@@ -196,6 +196,7 @@ class HttpServer(
     override fun stop() {
         super.stop()
         DirectoryCache.clear()
+        CastQueue.clear()
         // Interrupt any in-flight ZIP producers so they stop reading SAF and release the pipe.
         synchronized(zipThreads) { zipThreads.toList() }.forEach { it.interrupt() }
         executor.shutdown()
@@ -269,6 +270,37 @@ class HttpServer(
                 "Set-Cookie", "$COOKIE_NAME=$sessionToken; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
             )
             return resp
+        }
+
+        // ── Real-time phone -> TV cast channel ──────────────────────────────
+        // /api/cast?path=<relative>   controller (web UI) pushes a media URL to the TV
+        // /api/tv/poll                player (TV app) long-polls for the next command
+        if (path == "api/cast") {
+            ServerStateHolder.incrementRequests()
+            val rel = params["path"]?.firstOrNull()?.trimStart('/')
+                ?: return errJson(Response.Status.BAD_REQUEST, "Missing path")
+            val entry = (if (rel.isEmpty()) null else resolveFast(rel))
+                ?: return errJson(Response.Status.NOT_FOUND, "Not found")
+            if (entry.isDirectory) return errJson(Response.Status.BAD_REQUEST, "Not a file")
+            val tokQ = if (authNeeded()) "?tok=${FileUtils.encodeSeg(sessionToken)}" else ""
+            val href = "/" + rel.split('/').filter { it.isNotEmpty() }
+                .joinToString("/") { FileUtils.encodeSeg(it) }
+            val absUrl = "http://${ServerStateHolder.ip.value}:${ServerStateHolder.port.value}$href$tokQ"
+            CastQueue.cast(absUrl, FileUtils.getMimeType(entry.name))
+            return jsonResponse("""{"ok":true}""").also {
+                if (needsCookie) it.addHeader(
+                    "Set-Cookie", "$COOKIE_NAME=$sessionToken; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
+                )
+            }
+        }
+        if (path == "api/tv/poll") {
+            // Do NOT count long-polls as activity (would defeat the inactivity auto-stop).
+            val cmd = CastQueue.poll(25_000L)
+            return if (cmd == null) {
+                newFixedLengthResponse(Response.Status.NO_CONTENT, "application/json", "").also { cors(it) }
+            } else {
+                jsonResponse(ApiJson.castCommand(cmd.action, cmd.url, cmd.mime))
+            }
         }
 
         val isZip  = options.allowZip && params["zip"]?.firstOrNull() == "1"
