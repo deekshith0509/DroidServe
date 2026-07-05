@@ -301,11 +301,13 @@ class HttpServer(
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(rootUri, parentDocId)
         val results = ArrayList<FileEntry>(32)
         var cursor: Cursor? = null
+        var querySucceeded = false
         try {
             cursor = context.contentResolver.query(
                 childrenUri, SAF_PROJECTION, null, null, null
             )
             cursor?.let { c ->
+                querySucceeded = true   // provider answered — result is authoritative
                 // Resolve column indices once — avoids repeated string lookup in the loop
                 val idIdx   = c.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
                 val nameIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
@@ -334,6 +336,13 @@ class HttpServer(
         } finally {
             cursor?.close()
         }
+
+        // A null cursor / thrown query means the SAF provider connection went stale (common
+        // after the OEM freezer suspends and resumes us). Do NOT cache that transient failure
+        // as an empty folder — caching it is what made the server return 404 for everything
+        // while still "running", forcing a manual restart. Return empty WITHOUT caching so the
+        // very next request retries the provider and self-heals.
+        if (!querySucceeded) return emptyList()
 
         // Dirs first, then alpha — in-place sort avoids extra allocation
         results.sortWith(compareBy({ if (it.isDirectory) 0 else 1 }, { it.name.lowercase() }))
