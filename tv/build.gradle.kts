@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "com.deekshith.droidserve.tv"
-        minSdk = 24
+        minSdk = 21
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"

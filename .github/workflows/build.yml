@@ -30,11 +30,17 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build debug APK
+      - name: Build debug APKs (phone + TV)
         run: ./gradlew assembleDebug --stacktrace
 
-      - name: Upload APK
+      - name: Upload phone APK
         uses: actions/upload-artifact@v4
         with:
-          name: droidserve-debug-apk
+          name: droidserve-phone-debug-apk
           path: app/build/outputs/apk/debug/*.apk
+
+      - name: Upload TV APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: droidserve-tv-debug-apk
+          path: tv/build/outputs/apk/debug/*.apk
