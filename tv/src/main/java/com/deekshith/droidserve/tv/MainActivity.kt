@@ -192,25 +192,36 @@ private fun DiscoveryScreen(
         }
     }
     LaunchedEffect(state.servers.isNotEmpty()) {
-        if (state.servers.isNotEmpty()) runCatching { firstServerFocus.requestFocus() }
+        if (state.servers.isNotEmpty()) {
+            repeat(10) {
+                if (runCatching { firstServerFocus.requestFocus() }.isSuccess) return@LaunchedEffect
+                kotlinx.coroutines.delay(60)
+            }
+        }
     }
 }
 
 @Composable
 private fun ManualConnect(onManual: (String, Int) -> Unit) {
+    var open by remember { mutableStateOf(false) }
     var host by remember { mutableStateOf("") }
     var port by remember { mutableStateOf("8080") }
+    val hostFocus = remember { FocusRequester() }
     Column {
-        Text("Or enter manually:", color = MUTED, fontSize = 13.sp)
-        Spacer(Modifier.height(6.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            InputField(host, { host = it }, "192.168.x.x", Modifier.width(220.dp))
-            Spacer(Modifier.width(10.dp)); Text(":", color = MUTED); Spacer(Modifier.width(10.dp))
-            InputField(port, { port = it.filter { c -> c.isDigit() } }, "8080", Modifier.width(90.dp))
-            Spacer(Modifier.width(14.dp))
-            FocusableChip("Connect") {
-                if (host.isNotBlank()) onManual(host.trim(), port.toIntOrNull() ?: 8080)
+        // Opt-in so the text fields never grab the initial D-pad focus off the server list.
+        SortChip("⌨ Enter IP manually", open) { open = !open }
+        if (open) {
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                InputField(host, { host = it }, "192.168.x.x", Modifier.width(220.dp).focusRequester(hostFocus))
+                Spacer(Modifier.width(10.dp)); Text(":", color = MUTED); Spacer(Modifier.width(10.dp))
+                InputField(port, { port = it.filter { c -> c.isDigit() } }, "8080", Modifier.width(90.dp))
+                Spacer(Modifier.width(14.dp))
+                FocusableChip("Connect") {
+                    if (host.isNotBlank()) onManual(host.trim(), port.toIntOrNull() ?: 8080)
+                }
             }
+            LaunchedEffect(Unit) { runCatching { hostFocus.requestFocus() } }
         }
     }
 }
