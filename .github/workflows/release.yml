@@ -50,15 +50,15 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build APK                       # PROJECT-SPECIFIC: gradle task
+      - name: Build APKs (phone + TV)
         run: ./gradlew assembleDebug --stacktrace
 
-      - name: Stage APK with a release name
+      - name: Stage APKs with release names
         run: |
           mkdir -p release-out
-          # PROJECT-SPECIFIC: path to the built APK
-          cp app/build/outputs/apk/debug/*.apk \
-             "release-out/${{ github.event.repository.name }}-${TAG}.apk"
+          repo="${{ github.event.repository.name }}"
+          cp app/build/outputs/apk/debug/*.apk "release-out/${repo}-phone-${TAG}.apk"
+          cp tv/build/outputs/apk/debug/*.apk  "release-out/${repo}-tv-${TAG}.apk"
           ls -lh release-out
 
       - name: Publish GitHub Release
