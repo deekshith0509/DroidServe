@@ -878,6 +878,15 @@ class ServerForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    // If the user swipes the app away from Recents while the server is stopped/idle, make sure
+    // we don't leave a lingering foreground service (and its keep-alive audio) behind. When the
+    // server is actively running we keep going — that's the whole point of the foreground service.
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        val running = synchronized(lock) { httpServer != null } && !stopped
+        if (!running) stopAll()
+        super.onTaskRemoved(rootIntent)
+    }
+
     // Keep CPU and Wi-Fi awake during transfers so downloads don't stall when the screen sleeps.
     @Suppress("DEPRECATION")  // WIFI_MODE_FULL_HIGH_PERF still works; no equivalent across minSdk 24
     private fun acquireLocks() {
@@ -1011,8 +1020,11 @@ private class SilentAudioKeepAlive {
         ).coerceAtLeast(1_024)
 
         val attrs = android.media.AudioAttributes.Builder()
-            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+            // Sonification (UI/notification sound), NOT media. This still keeps the process
+            // in an audio-active/perceptible state so OEM freezers leave it running, but it
+            // is NOT treated as a music player, so no "now playing" media notification appears.
+            .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build()
         val format = android.media.AudioFormat.Builder()
             .setSampleRate(sampleRate)
