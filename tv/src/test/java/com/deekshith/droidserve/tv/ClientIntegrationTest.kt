@@ -102,11 +102,19 @@ class ClientIntegrationTest {
             "/api/list/Movies" -> writeJson(c, ApiFmt.list("Movies", listOf(
                 ApiFmt.Row("a b.mp4", false, 10, "video/mp4")
             ), tokQ))
+            "/api/tv/poll" -> {
+                val cmd = pendingCast
+                if (cmd == null) write(c, 204, "application/json", ByteArray(0))
+                else { pendingCast = null; writeJson(c, cmd) }
+            }
             "/clip.mp4" -> serveBytes(c, videoBytes, "video/mp4", range)
             "/notes.txt" -> write(c, 200, "text/plain", textBody.toByteArray())
             else -> write(c, 404, "text/plain", "nope".toByteArray())
         }
     }
+
+    // A cast command the fake phone will hand to the next /api/tv/poll.
+    @Volatile var pendingCast: String? = null
 
     private fun serveBytes(c: Socket, data: ByteArray, type: String, range: String?) {
         if (range != null && range.startsWith("bytes=")) {
@@ -157,10 +165,17 @@ class ClientIntegrationTest {
             DroidServeClient(base()).listDir("Movies").entries[0].url)
     }
 
-    @Test fun text_fetchReturnsContents() {
-        val client = DroidServeClient(base())
-        val txt = client.listDir("").entries.first { it.name == "notes.txt" }
-        assertEquals(textBody, client.fetchText(txt.url))
+    @Test fun poll_returnsNullWhenNoCommand() {
+        // 204 → no pending cast → null (client re-polls in a loop).
+        assertEquals(null, DroidServeClient(base()).pollCast())
+    }
+
+    @Test fun poll_returnsCastCommand() {
+        pendingCast = ApiFmt.cast("play", "${base()}/clip.mp4", "video/mp4")
+        val cmd = DroidServeClient(base()).pollCast()
+        assertEquals("play", cmd?.action)
+        assertEquals("${base()}/clip.mp4", cmd?.url)
+        assertEquals("video/mp4", cmd?.mime)
     }
 
     @Test fun streaming_rangeRequestReturnsSlice() {
@@ -224,4 +239,7 @@ private object ApiFmt {
         }
         return """{"path":"$path","entries":[$items]}"""
     }
+
+    fun cast(action: String, url: String, mime: String) =
+        """{"action":"$action","url":"$url","mime":"$mime"}"""
 }

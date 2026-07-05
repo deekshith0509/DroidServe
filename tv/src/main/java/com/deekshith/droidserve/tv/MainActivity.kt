@@ -1,6 +1,9 @@
 package com.deekshith.droidserve.tv
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -23,10 +26,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -40,23 +41,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.media3.common.MediaItem
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.PlayerView
-import coil.compose.AsyncImage
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 
 private val BG = Color(0xFF0F172A)
 private val SURFACE = Color(0xFF1E293B)
-private val SURFACE2 = Color(0xFF243449)
 private val ACCENT = Color(0xFF38BDF8)
 private val TEXT = Color(0xFFE2E8F0)
 private val MUTED = Color(0xFF7C8AA0)
@@ -70,6 +64,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // When a file is clicked OR the phone casts, hand the stream to the OS default player.
+        lifecycleScope.launch {
+            vm.open.collect { req -> openInDefaultApp(req) }
+        }
+
         setContent {
             val screen by vm.screen.collectAsStateWithLifecycle()
             Box(Modifier.fillMaxSize().background(BG)) {
@@ -77,10 +77,32 @@ class MainActivity : ComponentActivity() {
                     is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual)
                     is UiScreen.Auth -> AuthScreen(s, vm::submitAuth)
                     is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort)
-                    is UiScreen.Play -> PlayScreen(s)
-                    is UiScreen.ViewImage -> ImageScreen(s)
-                    is UiScreen.ViewText -> TextScreen(s)
                 }
+            }
+        }
+    }
+
+    /**
+     * Delegate playback/viewing to whatever app the user already has (VLC, MX Player, a photo
+     * viewer, etc). This gives us hardware decoding and broad codec support for free, and keeps
+     * the TV app tiny. We never bundle a player.
+     */
+    private fun openInDefaultApp(req: OpenRequest) {
+        val mime = req.mime.ifBlank { "*/*" }
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(Uri.parse(req.url), mime)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            // No app registered for this type — offer a chooser across everything that can VIEW.
+            try {
+                startActivity(Intent.createChooser(intent, "Open with").apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+            } catch (e2: Exception) {
+                Toast.makeText(this, "No app can open this file", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -103,9 +125,7 @@ private fun DiscoveryScreen(
         Text("📡 DroidServe TV", color = ACCENT, fontSize = 32.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
         Text("Pick a phone running DroidServe on your Wi-Fi", color = MUTED, fontSize = 16.sp)
-        state.error?.let {
-            Spacer(Modifier.height(10.dp)); Text(it, color = ERR, fontSize = 14.sp)
-        }
+        state.error?.let { Spacer(Modifier.height(10.dp)); Text(it, color = ERR, fontSize = 14.sp) }
         Spacer(Modifier.height(20.dp))
 
         if (state.connecting) {
@@ -141,7 +161,6 @@ private fun DiscoveryScreen(
             item { Spacer(Modifier.height(8.dp)); ManualConnect(onManual) }
         }
     }
-    // Give the remote an immediate cursor as soon as the first server appears.
     LaunchedEffect(state.servers.isNotEmpty()) {
         if (state.servers.isNotEmpty()) runCatching { firstServerFocus.requestFocus() }
     }
@@ -156,9 +175,7 @@ private fun ManualConnect(onManual: (String, Int) -> Unit) {
         Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             InputField(host, { host = it }, "192.168.x.x", Modifier.width(220.dp))
-            Spacer(Modifier.width(10.dp))
-            Text(":", color = MUTED)
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(10.dp)); Text(":", color = MUTED); Spacer(Modifier.width(10.dp))
             InputField(port, { port = it.filter { c -> c.isDigit() } }, "8080", Modifier.width(90.dp))
             Spacer(Modifier.width(14.dp))
             FocusableChip("Connect") {
@@ -198,12 +215,10 @@ private fun BrowseScreen(
 ) {
     val firstItemFocus = remember { FocusRequester() }
     Column(Modifier.fillMaxSize().padding(horizontal = 40.dp, vertical = 24.dp)) {
-        // Header: title + breadcrumb
         Text(state.server.name, color = ACCENT, fontSize = 22.sp, fontWeight = FontWeight.Bold)
         Text(breadcrumb(state.path), color = MUTED, fontSize = 14.sp)
         Spacer(Modifier.height(12.dp))
 
-        // Toolbar: filter box + sort chips
         Row(verticalAlignment = Alignment.CenterVertically) {
             InputField(state.filter, onFilter, "Filter files…", Modifier.width(280.dp))
             Spacer(Modifier.width(16.dp))
@@ -215,6 +230,10 @@ private fun BrowseScreen(
         }
         Spacer(Modifier.height(6.dp))
         Text(statusLine(state), color = MUTED, fontSize = 12.sp)
+        state.casting?.let {
+            Spacer(Modifier.height(6.dp))
+            Text("📲 Casting from phone → opening in your player…", color = ACCENT, fontSize = 13.sp)
+        }
         Spacer(Modifier.height(10.dp))
 
         when {
@@ -225,10 +244,7 @@ private fun BrowseScreen(
                     color = MUTED, fontSize = 15.sp)
             else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 entryRows(state.entries, firstItemFocus, onClick)
-                item {
-                    Spacer(Modifier.height(12.dp))
-                    ServerFooter(state)
-                }
+                item { Spacer(Modifier.height(12.dp)); ServerFooter(state) }
             }
         }
     }
@@ -252,7 +268,7 @@ private fun LazyListScope.entryRows(
                 Text(e.name, color = TEXT, fontSize = 17.sp)
                 Text(metaFor(e), color = MUTED, fontSize = 12.sp)
             }
-            if (e.isDir) Text("›", color = MUTED, fontSize = 22.sp)
+            Text(if (e.isDir) "›" else "▶", color = MUTED, fontSize = 18.sp)
         }
     }
 }
@@ -267,58 +283,11 @@ private fun ServerFooter(state: UiScreen.Browse) {
     ) {
         Text("ℹ️ Server info", color = ACCENT, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(4.dp))
-        Text(
-            "${state.fileCount} files · ${state.dirCount} folders · ${formatSize(state.totalBytes)} in this folder",
-            color = MUTED, fontSize = 11.sp
-        )
+        Text("${state.fileCount} files · ${state.dirCount} folders · ${formatSize(state.totalBytes)} in this folder",
+            color = MUTED, fontSize = 11.sp)
         Text("Served by ${state.server.name} @ ${state.server.host}:${state.server.port}",
             color = MUTED, fontSize = 11.sp)
-    }
-}
-
-// ── Media / viewers ──────────────────────────────────────────────────────────
-@Composable
-private fun PlayScreen(state: UiScreen.Play) {
-    val context = LocalContext.current
-    val player = remember {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(state.entry.url)); prepare(); playWhenReady = true
-        }
-    }
-    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { player.release() } }
-    AndroidView(
-        factory = { ctx -> PlayerView(ctx).apply { this.player = player; useController = true } },
-        modifier = Modifier.fillMaxSize().background(Color.Black)
-    )
-}
-
-@Composable
-private fun ImageScreen(state: UiScreen.ViewImage) {
-    Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
-        AsyncImage(model = state.entry.url, contentDescription = state.entry.name,
-            modifier = Modifier.fillMaxSize())
-        Text(state.entry.name, color = TEXT, fontSize = 13.sp,
-            modifier = Modifier.align(Alignment.BottomStart).padding(16.dp)
-                .background(Color(0xAA000000), RoundedCornerShape(6.dp)).padding(8.dp))
-    }
-}
-
-@Composable
-private fun TextScreen(state: UiScreen.ViewText) {
-    Column(Modifier.fillMaxSize().padding(40.dp)) {
-        Text(state.entry.name, color = ACCENT, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(12.dp))
-        when {
-            state.loading -> CircularProgressIndicator(color = ACCENT)
-            state.error != null -> Text("Error: ${state.error}", color = ERR)
-            else -> Box(
-                Modifier.fillMaxSize().background(SURFACE, RoundedCornerShape(8.dp))
-                    .padding(16.dp).verticalScroll(rememberScrollState())
-            ) {
-                Text(state.content ?: "", color = TEXT, fontSize = 13.sp,
-                    fontFamily = FontFamily.Monospace)
-            }
-        }
+        Text("Files open in your device's own player (VLC / MX / etc)", color = MUTED, fontSize = 11.sp)
     }
 }
 
@@ -348,9 +317,7 @@ private fun SortChip(label: String, active: Boolean, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     Text(
-        label,
-        color = if (active || focused) ACCENT else TEXT,
-        fontSize = 13.sp,
+        label, color = if (active || focused) ACCENT else TEXT, fontSize = 13.sp,
         modifier = Modifier
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             .background(SURFACE, RoundedCornerShape(7.dp))
@@ -391,10 +358,7 @@ private fun InputField(
     ) {
         if (value.isEmpty()) Text(placeholder, color = MUTED, fontSize = 15.sp)
         BasicTextField(
-            value = value,
-            onValueChange = onChange,
-            interactionSource = interaction,
-            singleLine = true,
+            value = value, onValueChange = onChange, interactionSource = interaction, singleLine = true,
             textStyle = TextStyle(color = TEXT, fontSize = 15.sp),
             cursorBrush = androidx.compose.ui.graphics.SolidColor(ACCENT),
             visualTransformation = if (password)
@@ -411,17 +375,11 @@ private fun breadcrumb(path: String): String =
 
 private fun statusLine(s: UiScreen.Browse): String {
     val shown = s.entries.size
-    return if (s.filter.isBlank()) "$shown items"
-    else "$shown of ${s.total} items"
+    return if (s.filter.isBlank()) "$shown items" else "$shown of ${s.total} items"
 }
 
 private fun iconFor(e: RemoteEntry): String = when {
-    e.isDir -> "📁"
-    e.isVideo -> "🎬"
-    e.isAudio -> "🎵"
-    e.isImage -> "🖼️"
-    e.isText -> "📝"
-    else -> "📄"
+    e.isDir -> "📁"; e.isVideo -> "🎬"; e.isAudio -> "🎵"; e.isImage -> "🖼️"; e.isText -> "📝"; else -> "📄"
 }
 
 private fun metaFor(e: RemoteEntry): String = if (e.isDir) "Folder" else formatSize(e.size)

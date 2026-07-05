@@ -4,13 +4,21 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 enum class SortMode { DEFAULT, NAME, SIZE }
+
+/** A media stream to hand to the OS default player (VLC/MX/etc) via ACTION_VIEW. */
+data class OpenRequest(val url: String, val mime: String)
 
 /** The screen the UI is currently showing. */
 sealed interface UiScreen {
@@ -21,30 +29,21 @@ sealed interface UiScreen {
     ) : UiScreen
 
     /** Password prompt for a protected server. */
-    data class Auth(
-        val server: DiscoveredServer,
-        val error: String? = null
-    ) : UiScreen
+    data class Auth(val server: DiscoveredServer, val error: String? = null) : UiScreen
 
     data class Browse(
         val server: DiscoveredServer,
         val path: String,
-        val entries: List<RemoteEntry>,   // already filtered + sorted for display
-        val total: Int,                   // total entries before filtering
+        val entries: List<RemoteEntry>,   // filtered + sorted for display
+        val total: Int,
         val fileCount: Int,
         val dirCount: Int,
         val totalBytes: Long,
         val filter: String = "",
         val sort: SortMode = SortMode.DEFAULT,
         val loading: Boolean = false,
-        val error: String? = null
-    ) : UiScreen
-
-    data class Play(val server: DiscoveredServer, val entry: RemoteEntry, val returnPath: String) : UiScreen
-    data class ViewImage(val entry: RemoteEntry, val returnPath: String, val server: DiscoveredServer) : UiScreen
-    data class ViewText(
-        val entry: RemoteEntry, val returnPath: String, val server: DiscoveredServer,
-        val content: String? = null, val loading: Boolean = true, val error: String? = null
+        val error: String? = null,
+        val casting: OpenRequest? = null   // transient toast when a phone casts to us
     ) : UiScreen
 }
 
@@ -55,23 +54,23 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private val _screen = MutableStateFlow<UiScreen>(UiScreen.Discovery())
     val screen: StateFlow<UiScreen> = _screen.asStateFlow()
 
+    // One-shot events telling the Activity to fire an ACTION_VIEW intent (open in native player).
+    private val _open = MutableSharedFlow<OpenRequest>(extraBufferCapacity = 4)
+    val open: SharedFlow<OpenRequest> = _open.asSharedFlow()
+
     private var client: DroidServeClient? = null
-    // Raw (unfiltered/unsorted) listing for the current folder, so filter/sort are instant.
     private var rawEntries: List<RemoteEntry> = emptyList()
-    // Auto-connect only once, and only to the first single server found, so we never
-    // hijack the picker after the user has intentionally backed out to it.
     private var autoConnectTried = false
+    private var pollJob: Job? = null
+    private var connectedBase: String? = null
+    private var connectedCreds: Pair<String, String?>? = null
 
     init {
         viewModelScope.launch {
             discovery.discover().collect { servers ->
                 (_screen.value as? UiScreen.Discovery)?.let { cur ->
                     _screen.value = cur.copy(servers = servers)
-                    // "Just works" path: a single phone on the network connects itself so the
-                    // file list appears with no remote interaction at all.
-                    if (!autoConnectTried && !cur.connecting && cur.error == null &&
-                        servers.size == 1
-                    ) {
+                    if (!autoConnectTried && !cur.connecting && cur.error == null && servers.size == 1) {
                         autoConnectTried = true
                         connect(servers.first())
                     }
@@ -80,7 +79,6 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Connect to a discovered/manual server; probes /api/info to detect auth. */
     fun connect(server: DiscoveredServer) {
         _screen.value = UiScreen.Discovery(
             servers = (_screen.value as? UiScreen.Discovery)?.servers ?: emptyList(),
@@ -94,6 +92,9 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                     _screen.value = UiScreen.Auth(server)
                 } else {
                     client = probe
+                    connectedBase = server.baseUrl
+                    connectedCreds = "" to null
+                    startPollLoop()
                     openFolder(server, "")
                 }
             } catch (e: Exception) {
@@ -108,13 +109,15 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     fun connectManual(host: String, port: Int) =
         connect(DiscoveredServer("$host:$port", host, port))
 
-    /** Submit credentials for a protected server. */
     fun submitAuth(server: DiscoveredServer, username: String, password: String) {
         viewModelScope.launch {
             try {
                 val c = DroidServeClient(server.baseUrl, username, password)
-                withContext(Dispatchers.IO) { c.listDir("") }   // validates creds
+                withContext(Dispatchers.IO) { c.listDir("") }
                 client = c
+                connectedBase = server.baseUrl
+                connectedCreds = username to password
+                startPollLoop()
                 openFolder(server, "")
             } catch (e: AuthException) {
                 _screen.value = UiScreen.Auth(server, error = "Wrong password, try again")
@@ -132,12 +135,10 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                     (client ?: DroidServeClient(server.baseUrl).also { client = it }).listDir(path)
                 }
                 rawEntries = listing.entries
-                _screen.value = render(server, path, filter = "", sort = SortMode.DEFAULT)
+                _screen.value = render(server, path, "", SortMode.DEFAULT)
             } catch (e: Exception) {
-                _screen.value = UiScreen.Browse(
-                    server, path, emptyList(), 0, 0, 0, 0,
-                    error = e.message ?: "Failed to load"
-                )
+                _screen.value = UiScreen.Browse(server, path, emptyList(), 0, 0, 0, 0,
+                    error = e.message ?: "Failed to load")
             }
         }
     }
@@ -152,13 +153,11 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         _screen.value = render(cur.server, cur.path, cur.filter, mode)
     }
 
-    // Apply filter + sort to the raw listing (folders always grouped first, matching the web UI).
     private fun render(server: DiscoveredServer, path: String, filter: String, sort: SortMode): UiScreen.Browse {
         val f = filter.trim().lowercase()
-        var shown = if (f.isEmpty()) rawEntries
-                    else rawEntries.filter { it.name.lowercase().contains(f) }
+        var shown = if (f.isEmpty()) rawEntries else rawEntries.filter { it.name.lowercase().contains(f) }
         shown = when (sort) {
-            SortMode.DEFAULT -> shown  // server already returns dirs-first, alpha
+            SortMode.DEFAULT -> shown
             SortMode.NAME -> shown.sortedWith(compareBy({ if (it.isDir) 0 else 1 }, { it.name.lowercase() }))
             SortMode.SIZE -> shown.sortedWith(compareBy({ if (it.isDir) 0 else 1 }, { -it.size }))
         }
@@ -172,47 +171,66 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
+    /** Click a row: folders navigate; files open in the OS default app (native player/viewer). */
     fun onEntryClick(entry: RemoteEntry) {
         val cur = _screen.value as? UiScreen.Browse ?: return
-        when {
-            entry.isDir -> {
-                val childPath = if (cur.path.isEmpty()) entry.name else "${cur.path}/${entry.name}"
-                openFolder(cur.server, childPath)
-            }
-            entry.isPlayable -> _screen.value = UiScreen.Play(cur.server, entry, cur.path)
-            entry.isImage -> _screen.value = UiScreen.ViewImage(entry, cur.path, cur.server)
-            entry.isText -> loadText(cur.server, entry, cur.path)
-            // Unknown types: no native viewer — ignore (a download action could be added).
+        if (entry.isDir) {
+            val childPath = if (cur.path.isEmpty()) entry.name else "${cur.path}/${entry.name}"
+            openFolder(cur.server, childPath)
+        } else {
+            // Delegate to the device's own capable player/viewer — no built-in player.
+            _open.tryEmit(OpenRequest(entry.url, entry.mime))
         }
     }
 
-    private fun loadText(server: DiscoveredServer, entry: RemoteEntry, returnPath: String) {
-        _screen.value = UiScreen.ViewText(entry, returnPath, server, loading = true)
-        viewModelScope.launch {
-            try {
-                val text = withContext(Dispatchers.IO) {
-                    (client ?: DroidServeClient(server.baseUrl)).fetchText(entry.url)
+    // ── Real-time cast: long-poll the phone; when it casts, open in the native player ──
+    private fun startPollLoop() {
+        pollJob?.cancel()
+        val base = connectedBase ?: return
+        val (user, pass) = connectedCreds ?: ("" to null)
+        pollJob = viewModelScope.launch {
+            val poller = DroidServeClient(base, user, pass)
+            while (isActive) {
+                try {
+                    val cmd = withContext(Dispatchers.IO) { poller.pollCast() }
+                    if (cmd != null) {
+                        _open.tryEmit(OpenRequest(cmd.url, cmd.mime))
+                        (_screen.value as? UiScreen.Browse)?.let {
+                            _screen.value = it.copy(casting = OpenRequest(cmd.url, cmd.mime))
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Server asleep/unreachable — back off, then keep trying (self-heal).
+                    kotlinx.coroutines.delay(3000)
                 }
-                _screen.value = UiScreen.ViewText(entry, returnPath, server, content = text, loading = false)
-            } catch (e: Exception) {
-                _screen.value = UiScreen.ViewText(entry, returnPath, server, loading = false, error = e.message)
             }
         }
     }
 
-    /** Back navigation. Returns true if handled, false if the app should exit. */
+    fun clearCastToast() {
+        (_screen.value as? UiScreen.Browse)?.let {
+            if (it.casting != null) _screen.value = it.copy(casting = null)
+        }
+    }
+
     fun onBack(): Boolean {
         when (val cur = _screen.value) {
-            is UiScreen.Play -> { openFolder(cur.server, cur.returnPath); return true }
-            is UiScreen.ViewImage -> { openFolder(cur.server, cur.returnPath); return true }
-            is UiScreen.ViewText -> { openFolder(cur.server, cur.returnPath); return true }
             is UiScreen.Auth -> { _screen.value = UiScreen.Discovery(); return true }
             is UiScreen.Browse -> {
-                if (cur.path.isEmpty()) { _screen.value = UiScreen.Discovery(); return true }
+                if (cur.path.isEmpty()) {
+                    pollJob?.cancel()
+                    _screen.value = UiScreen.Discovery()
+                    return true
+                }
                 openFolder(cur.server, cur.path.substringBeforeLast('/', ""))
                 return true
             }
             is UiScreen.Discovery -> return false
         }
+    }
+
+    override fun onCleared() {
+        pollJob?.cancel()
+        super.onCleared()
     }
 }

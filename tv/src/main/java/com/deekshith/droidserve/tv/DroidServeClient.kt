@@ -59,16 +59,25 @@ class DroidServeClient(
         return Listing(o.optString("path", path), list)
     }
 
-    /** Fetch a (small) text/code file's contents for the in-app text viewer. */
-    fun fetchText(url: String, maxBytes: Int = 512 * 1024): String {
-        val conn = open(url)
+    /**
+     * Long-poll the phone for the next cast command. The server blocks up to ~25s, then
+     * returns 204 (no command) so we immediately re-poll. Returns null on 204/timeout.
+     */
+    fun pollCast(): CastCommand? {
+        val conn = open("$baseUrl/api/tv/poll").apply {
+            readTimeout = 30_000   // longer than the server's block window
+        }
         try {
             val code = conn.responseCode
             if (code == 401) throw AuthException()
+            if (code == 204) return null
             if (code !in 200..299) throw RuntimeException("HTTP $code")
-            val bytes = conn.inputStream.use { it.readBytes() }
-            val slice = if (bytes.size > maxBytes) bytes.copyOf(maxBytes) else bytes
-            return String(slice, Charsets.UTF_8)
+            val o = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+            return CastCommand(
+                action = o.optString("action", "play"),
+                url = o.optString("url"),
+                mime = o.optString("mime")
+            )
         } finally { conn.disconnect() }
     }
 

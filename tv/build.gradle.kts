@@ -61,13 +61,6 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
 
-    // Media playback
-    implementation("androidx.media3:media3-exoplayer:1.4.1")
-    implementation("androidx.media3:media3-ui:1.4.1")
-
-    // Image loading for the in-app image viewer
-    implementation("io.coil-kt:coil-compose:2.7.0")
-
     // ViewModel + lifecycle for Compose
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")
