@@ -58,12 +58,23 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private var client: DroidServeClient? = null
     // Raw (unfiltered/unsorted) listing for the current folder, so filter/sort are instant.
     private var rawEntries: List<RemoteEntry> = emptyList()
+    // Auto-connect only once, and only to the first single server found, so we never
+    // hijack the picker after the user has intentionally backed out to it.
+    private var autoConnectTried = false
 
     init {
         viewModelScope.launch {
             discovery.discover().collect { servers ->
-                (_screen.value as? UiScreen.Discovery)?.let {
-                    _screen.value = it.copy(servers = servers)
+                (_screen.value as? UiScreen.Discovery)?.let { cur ->
+                    _screen.value = cur.copy(servers = servers)
+                    // "Just works" path: a single phone on the network connects itself so the
+                    // file list appears with no remote interaction at all.
+                    if (!autoConnectTried && !cur.connecting && cur.error == null &&
+                        servers.size == 1
+                    ) {
+                        autoConnectTried = true
+                        connect(servers.first())
+                    }
                 }
             }
         }

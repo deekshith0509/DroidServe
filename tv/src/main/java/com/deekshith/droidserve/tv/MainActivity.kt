@@ -98,6 +98,7 @@ private fun DiscoveryScreen(
     onConnect: (DiscoveredServer) -> Unit,
     onManual: (String, Int) -> Unit
 ) {
+    val firstServerFocus = remember { FocusRequester() }
     Column(Modifier.fillMaxSize().padding(48.dp)) {
         Text("📡 DroidServe TV", color = ACCENT, fontSize = 32.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
@@ -125,8 +126,10 @@ private fun DiscoveryScreen(
                     }
                 }
             }
-            items(state.servers, key = { it.name }) { srv ->
-                FocusableRow(onClick = { onConnect(srv) }) {
+            items(state.servers.size, key = { state.servers[it].name }) { i ->
+                val srv = state.servers[i]
+                val mod = if (i == 0) Modifier.focusRequester(firstServerFocus) else Modifier
+                FocusableRow(onClick = { onConnect(srv) }, extraModifier = mod) {
                     Text("🖥️", fontSize = 24.sp)
                     Spacer(Modifier.width(16.dp))
                     Column {
@@ -137,6 +140,10 @@ private fun DiscoveryScreen(
             }
             item { Spacer(Modifier.height(8.dp)); ManualConnect(onManual) }
         }
+    }
+    // Give the remote an immediate cursor as soon as the first server appears.
+    LaunchedEffect(state.servers.isNotEmpty()) {
+        if (state.servers.isNotEmpty()) runCatching { firstServerFocus.requestFocus() }
     }
 }
 
