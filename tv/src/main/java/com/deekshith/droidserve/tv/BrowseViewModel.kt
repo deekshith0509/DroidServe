@@ -76,9 +76,14 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 publish()
             }
         }
-        // Fallback: subnet probe, repeated. Needed because many routers block mDNS multicast
-        // between clients, so a reachable phone server would otherwise never show up. Always
-        // just fills the picker — the user still chooses (no auto-connect).
+        // Fallback: subnet probe. Needed because many routers block mDNS multicast between
+        // clients, so a reachable phone server would otherwise never show up. Always just
+        // fills the picker — the user still chooses (no auto-connect).
+        //
+        // Adaptive + polite so it never contends with other tools on the TV's Wi-Fi NIC
+        // (e.g. atvtools controlling the TV at the same time): only runs while the picker is
+        // showing, backs off to a slow heartbeat once at least one server is known, and stops
+        // entirely once the user leaves the picker to browse.
         viewModelScope.launch {
             while (true) {
                 if (_screen.value is UiScreen.Discovery) {
@@ -89,8 +94,13 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                             publish()
                         }
                     } catch (_: Exception) {}
+                    // Fast sweeps while nothing is found yet; a slow heartbeat afterwards just
+                    // to catch servers that come online later, keeping bandwidth mostly free.
+                    kotlinx.coroutines.delay(if (discovered.isEmpty()) 6000 else 20000)
+                } else {
+                    // Not on the picker (browsing/playing) — don't scan at all.
+                    kotlinx.coroutines.delay(3000)
                 }
-                kotlinx.coroutines.delay(5000)
             }
         }
     }

@@ -6,50 +6,80 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.Inet4Address
+import java.net.InetSocketAddress
 import java.net.NetworkInterface
+import java.net.Socket
 import java.net.URL
 
 /**
- * Subnet probe used ONLY as a discovery fallback.
+ * Subnet probe used ONLY as a discovery fallback (mDNS is primary).
  *
- * mDNS/NSD is the primary path, but many consumer routers block multicast between clients
- * (AP/client isolation, IGMP snooping) and some OEM phones suppress NSD in the background —
- * on those networks the phone's HTTP server is reachable but never shows up over mDNS. This
- * probe fills the SAME picker list by trying GET /api/info across the local /24 so servers
- * still appear. The user still sees the list and chooses; nothing is auto-selected.
+ * Many consumer routers block multicast between clients, so a reachable phone server never
+ * shows up over mDNS. This probe fills the SAME picker list so servers still appear. The user
+ * still chooses; nothing is auto-selected.
+ *
+ * Designed to be a good network citizen so it doesn't starve other tools sharing the TV's
+ * single Wi-Fi NIC (e.g. atvtools controlling the TV over the network at the same time):
+ *   - Bounded concurrency (a small semaphore) instead of ~1000 simultaneous sockets.
+ *   - A fast, cheap TCP-connect liveness check first; a full HTTP GET only happens for hosts
+ *     whose port actually accepts a connection (almost always just the real server).
+ *   - Short timeouts, and the whole pass is cancellable via coroutine cancellation.
+ * The ViewModel calls this on an adaptive schedule (slower once servers are known).
  */
 class SubnetScanner(context: Context) {
 
     private val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
 
     companion object {
-        private val PORTS = intArrayOf(8080, 8081, 8888, 80)
-        private const val CONNECT_TIMEOUT = 350
-        private const val READ_TIMEOUT = 500
+        // Only the realistic DroidServe ports; the app defaults to 8080.
+        private val PORTS = intArrayOf(8080, 8081, 8888)
+        // Cap simultaneous sockets so we never flood the NIC / exhaust fds. This leaves plenty
+        // of headroom for other tools sharing the TV's Wi-Fi (e.g. atvtools) while still
+        // sweeping a /24 within a few seconds.
+        private const val MAX_CONCURRENT = 24
+        private const val TCP_CONNECT_TIMEOUT = 300   // fast liveness check
+        private const val HTTP_TIMEOUT = 800          // only for hosts that accepted TCP
     }
 
     /** Scan the local /24 and return every DroidServe server that answers /api/info. */
     suspend fun scan(): List<DiscoveredServer> {
         val prefix = localSubnetPrefix() ?: return emptyList()
+        val gate = Semaphore(MAX_CONCURRENT)
         return coroutineScope {
             (1..254).map { host ->
-                async(Dispatchers.IO) { probe("$prefix$host") }
+                async(Dispatchers.IO) {
+                    gate.withPermit { probe("$prefix$host") }
+                }
             }.awaitAll().filterNotNull()
         }
     }
 
-    private fun probe(ip: String): DiscoveredServer? {
-        for (port in PORTS) tryOne(ip, port)?.let { return it }
+    private suspend fun probe(ip: String): DiscoveredServer? {
+        for (port in PORTS) {
+            // Cheap gate: is anything even listening? Skips the expensive HTTP path for the
+            // ~253 dead hosts on a typical subnet.
+            if (!tcpOpen(ip, port)) continue
+            verify(ip, port)?.let { return it }
+        }
         return null
     }
 
-    private fun tryOne(ip: String, port: Int): DiscoveredServer? = try {
+    private fun tcpOpen(ip: String, port: Int): Boolean = try {
+        Socket().use { s ->
+            s.connect(InetSocketAddress(ip, port), TCP_CONNECT_TIMEOUT)
+            true
+        }
+    } catch (_: Exception) { false }
+
+    private fun verify(ip: String, port: Int): DiscoveredServer? = try {
         val conn = (URL("http://$ip:$port/api/info").openConnection() as HttpURLConnection).apply {
-            connectTimeout = CONNECT_TIMEOUT
-            readTimeout = READ_TIMEOUT
+            connectTimeout = HTTP_TIMEOUT
+            readTimeout = HTTP_TIMEOUT
             requestMethod = "GET"
             setRequestProperty("Accept", "application/json")
         }
