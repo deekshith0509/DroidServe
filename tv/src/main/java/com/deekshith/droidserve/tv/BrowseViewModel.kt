@@ -50,6 +50,7 @@ sealed interface UiScreen {
 class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     private val discovery = ServerDiscovery(app)
+    private val scanner = SubnetScanner(app)
 
     private val _screen = MutableStateFlow<UiScreen>(UiScreen.Discovery())
     val screen: StateFlow<UiScreen> = _screen.asStateFlow()
@@ -60,26 +61,43 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     private var client: DroidServeClient? = null
     private var rawEntries: List<RemoteEntry> = emptyList()
-    private var autoConnectTried = false
     private var pollJob: Job? = null
     private var connectedBase: String? = null
     private var connectedCreds: Pair<String, String?>? = null
 
+    // Merged results keyed by "host:port" so mDNS + subnet-probe fallback never duplicate.
+    private val discovered = LinkedHashMap<String, DiscoveredServer>()
+
     init {
-        // Live mDNS/NSD: every phone advertising _droidserve._tcp shows up here, and the set
-        // updates as servers appear/disappear. Scales to any number of servers on the LAN.
+        // Primary: live mDNS/NSD — every phone advertising _droidserve._tcp appears here.
         viewModelScope.launch {
             discovery.discover().collect { servers ->
-                (_screen.value as? UiScreen.Discovery)?.let { cur ->
-                    _screen.value = cur.copy(servers = servers)
-                    // Auto-connect only when exactly one server exists, so multi-server networks
-                    // always show the picker and let the user choose.
-                    if (!autoConnectTried && !cur.connecting && cur.error == null && servers.size == 1) {
-                        autoConnectTried = true
-                        connect(servers.first())
-                    }
-                }
+                servers.forEach { discovered["${it.host}:${it.port}"] = it }
+                publish()
             }
+        }
+        // Fallback: subnet probe, repeated. Needed because many routers block mDNS multicast
+        // between clients, so a reachable phone server would otherwise never show up. Always
+        // just fills the picker — the user still chooses (no auto-connect).
+        viewModelScope.launch {
+            while (true) {
+                if (_screen.value is UiScreen.Discovery) {
+                    try {
+                        val found = withContext(Dispatchers.IO) { scanner.scan() }
+                        if (found.isNotEmpty()) {
+                            found.forEach { discovered["${it.host}:${it.port}"] = it }
+                            publish()
+                        }
+                    } catch (_: Exception) {}
+                }
+                kotlinx.coroutines.delay(5000)
+            }
+        }
+    }
+
+    private fun publish() {
+        (_screen.value as? UiScreen.Discovery)?.let { cur ->
+            _screen.value = cur.copy(servers = discovered.values.toList())
         }
     }
 
