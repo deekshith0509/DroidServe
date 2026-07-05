@@ -31,6 +31,8 @@ data class RemoteEntry(
     val isVideo: Boolean get() = mime.startsWith("video/")
     val isAudio: Boolean get() = mime.startsWith("audio/")
     val isImage: Boolean get() = mime.startsWith("image/")
+    val isText: Boolean get() = mime.startsWith("text/") ||
+        mime == "application/json" || mime == "application/xml" || mime == "application/javascript"
     val isPlayable: Boolean get() = isVideo || isAudio
 }
 
