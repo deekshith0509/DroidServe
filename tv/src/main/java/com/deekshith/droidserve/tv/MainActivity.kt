@@ -133,32 +133,31 @@ private fun DiscoveryScreen(
                 CircularProgressIndicator(color = ACCENT, modifier = Modifier.size(22.dp))
                 Spacer(Modifier.width(12.dp)); Text("Connecting…", color = TEXT, fontSize = 16.sp)
             }
-            return@Column
-        }
-
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (state.servers.isEmpty()) {
-                item {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(color = ACCENT, modifier = Modifier.size(20.dp))
-                        Spacer(Modifier.width(12.dp))
-                        Text("Searching the network…", color = TEXT, fontSize = 15.sp)
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (state.servers.isEmpty()) {
+                    item {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(color = ACCENT, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(12.dp))
+                            Text("Searching the network…", color = TEXT, fontSize = 15.sp)
+                        }
                     }
                 }
-            }
-            items(state.servers.size, key = { state.servers[it].name }) { i ->
-                val srv = state.servers[i]
-                val mod = if (i == 0) Modifier.focusRequester(firstServerFocus) else Modifier
-                FocusableRow(onClick = { onConnect(srv) }, extraModifier = mod) {
-                    Text("🖥️", fontSize = 24.sp)
-                    Spacer(Modifier.width(16.dp))
-                    Column {
-                        Text(srv.name, color = TEXT, fontSize = 18.sp, fontWeight = FontWeight.Medium)
-                        Text("${srv.host}:${srv.port}", color = MUTED, fontSize = 13.sp)
+                items(state.servers.size, key = { state.servers[it].name }) { i ->
+                    val srv = state.servers[i]
+                    val mod = if (i == 0) Modifier.focusRequester(firstServerFocus) else Modifier
+                    FocusableRow(onClick = { onConnect(srv) }, extraModifier = mod) {
+                        Text("🖥️", fontSize = 24.sp)
+                        Spacer(Modifier.width(16.dp))
+                        Column {
+                            Text(srv.name, color = TEXT, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+                            Text("${srv.host}:${srv.port}", color = MUTED, fontSize = 13.sp)
+                        }
                     }
                 }
+                item { Spacer(Modifier.height(8.dp)); ManualConnect(onManual) }
             }
-            item { Spacer(Modifier.height(8.dp)); ManualConnect(onManual) }
         }
     }
     LaunchedEffect(state.servers.isNotEmpty()) {
