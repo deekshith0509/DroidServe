@@ -39,11 +39,15 @@ class ServerDiscovery(context: Context) {
         val found = LinkedHashMap<String, DiscoveredServer>()
         fun emit() { trySend(found.values.toList()) }
 
-        // Hold multicast so inbound mDNS packets are delivered to us.
-        val multicastLock = wifi?.createMulticastLock("droidserve-tv-nsd")?.apply {
-            setReferenceCounted(true)
-            try { acquire() } catch (_: Exception) {}
-        }
+        // Hold multicast ONLY while discovery is active so inbound mDNS packets reach us.
+        // Not reference-counted: exactly one acquire here, one release in awaitClose, so it
+        // can never leak into a permanent high-power Wi-Fi state that starves the NIC.
+        val multicastLock = try {
+            wifi?.createMulticastLock("droidserve-tv-nsd")?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (_: Exception) { null }
 
         // Serialize resolves: only one in flight at a time.
         val resolveQueue = ArrayDeque<NsdServiceInfo>()

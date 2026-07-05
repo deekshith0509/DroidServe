@@ -38,10 +38,10 @@ class SubnetScanner(context: Context) {
     companion object {
         // Only the realistic DroidServe ports; the app defaults to 8080.
         private val PORTS = intArrayOf(8080, 8081, 8888)
-        // Cap simultaneous sockets so we never flood the NIC / exhaust fds. This leaves plenty
-        // of headroom for other tools sharing the TV's Wi-Fi (e.g. atvtools) while still
-        // sweeping a /24 within a few seconds.
-        private const val MAX_CONCURRENT = 24
+        // Cap simultaneous sockets so we never flood the NIC / exhaust fds on a low-end TV.
+        // 12 keeps a full /24 sweep to a few seconds while leaving most of the Wi-Fi NIC free
+        // for other tools (adb / atvtools) that share it.
+        private const val MAX_CONCURRENT = 12
         private const val TCP_CONNECT_TIMEOUT = 300   // fast liveness check
         private const val HTTP_TIMEOUT = 800          // only for hosts that accepted TCP
     }
