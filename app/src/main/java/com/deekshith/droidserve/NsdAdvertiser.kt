@@ -3,6 +3,7 @@ package com.deekshith.droidserve
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.os.Build
 import android.util.Log
 
 /**
@@ -35,6 +36,16 @@ class NsdAdvertiser(context: Context) {
             serviceName = name
             serviceType = SERVICE_TYPE
             setPort(port)
+            // Attach at least one TXT attribute. A service advertised with an empty/absent TXT
+            // record trips a platform bug (NsdService.setAttribute throws while a resolver builds
+            // the NsdServiceInfo), which silently aborts discovery on the client. A valid TXT
+            // record avoids that path. Also handy metadata for clients.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                try {
+                    setAttribute("api", "1")
+                    setAttribute("app", "droidserve")
+                } catch (_: Exception) {}
+            }
         }
         val l = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(s: NsdServiceInfo) {

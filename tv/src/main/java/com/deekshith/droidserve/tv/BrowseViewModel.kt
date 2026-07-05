@@ -66,10 +66,14 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private var connectedCreds: Pair<String, String?>? = null
 
     init {
+        // Live mDNS/NSD: every phone advertising _droidserve._tcp shows up here, and the set
+        // updates as servers appear/disappear. Scales to any number of servers on the LAN.
         viewModelScope.launch {
             discovery.discover().collect { servers ->
                 (_screen.value as? UiScreen.Discovery)?.let { cur ->
                     _screen.value = cur.copy(servers = servers)
+                    // Auto-connect only when exactly one server exists, so multi-server networks
+                    // always show the picker and let the user choose.
                     if (!autoConnectTried && !cur.connecting && cur.error == null && servers.size == 1) {
                         autoConnectTried = true
                         connect(servers.first())

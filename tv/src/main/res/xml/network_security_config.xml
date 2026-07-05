@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DroidServe talks to phone servers over plain HTTP on the local network (no TLS, by design,
+  like the phone app itself). Android blocks cleartext by default on API 28+, which made every
+  connection fail. Allow cleartext to private/LAN ranges (and localhost for tests) only.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
