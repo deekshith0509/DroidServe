@@ -26,8 +26,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -42,6 +44,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -65,18 +68,31 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // If we crashed last run, surface the saved stack trace on-screen (we can't always
+        // attach adb to a TV). Reading it clears it.
+        val crashFile = App.crashFile(application)
+        val lastCrash = if (crashFile.exists()) {
+            val t = runCatching { crashFile.readText() }.getOrNull()
+            runCatching { crashFile.delete() }
+            t
+        } else null
+
         // When a file is clicked OR the phone casts, hand the stream to the OS default player.
         lifecycleScope.launch {
             vm.open.collect { req -> openInDefaultApp(req) }
         }
 
         setContent {
-            val screen by vm.screen.collectAsStateWithLifecycle()
-            Box(Modifier.fillMaxSize().background(BG)) {
-                when (val s = screen) {
-                    is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual)
-                    is UiScreen.Auth -> AuthScreen(s, vm::submitAuth)
-                    is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort)
+            if (lastCrash != null) {
+                CrashScreen(lastCrash)
+            } else {
+                val screen by vm.screen.collectAsStateWithLifecycle()
+                Box(Modifier.fillMaxSize().background(BG)) {
+                    when (val s = screen) {
+                        is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual)
+                        is UiScreen.Auth -> AuthScreen(s, vm::submitAuth)
+                        is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort)
+                    }
                 }
             }
         }
@@ -110,6 +126,21 @@ class MainActivity : ComponentActivity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (!vm.onBack()) super.onBackPressed()
+    }
+}
+
+// ── Crash reporter ────────────────────────────────────────────────────────
+@Composable
+private fun CrashScreen(trace: String) {
+    Column(
+        Modifier.fillMaxSize().background(BG).padding(24.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Text("⚠️ DroidServe TV crashed last time", color = ERR, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        Text("Please share this with the developer, then reopen the app:", color = MUTED, fontSize = 13.sp)
+        Spacer(Modifier.height(12.dp))
+        Text(trace, color = TEXT, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
     }
 }
 
@@ -213,19 +244,31 @@ private fun BrowseScreen(
     onSort: (SortMode) -> Unit
 ) {
     val firstItemFocus = remember { FocusRequester() }
+    // Search is opt-in: on a 10-foot D-pad UI an always-on text field would grab initial
+    // focus, trap the remote, and pop the on-screen keyboard. Instead the list is focused by
+    // default and a "🔍 Search" chip reveals the filter field only when the user wants it.
+    var searchOpen by remember(state.path) { mutableStateOf(false) }
+    val searchFocus = remember { FocusRequester() }
+
     Column(Modifier.fillMaxSize().padding(horizontal = 40.dp, vertical = 24.dp)) {
         Text(state.server.name, color = ACCENT, fontSize = 22.sp, fontWeight = FontWeight.Bold)
         Text(breadcrumb(state.path), color = MUTED, fontSize = 14.sp)
         Spacer(Modifier.height(12.dp))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            InputField(state.filter, onFilter, "Filter files…", Modifier.width(280.dp))
-            Spacer(Modifier.width(16.dp))
+            SortChip("🔍 Search", searchOpen) { searchOpen = !searchOpen }
+            Spacer(Modifier.width(8.dp))
             SortChip("Default", state.sort == SortMode.DEFAULT) { onSort(SortMode.DEFAULT) }
             Spacer(Modifier.width(8.dp))
             SortChip("Name", state.sort == SortMode.NAME) { onSort(SortMode.NAME) }
             Spacer(Modifier.width(8.dp))
             SortChip("Size ↓", state.sort == SortMode.SIZE) { onSort(SortMode.SIZE) }
+        }
+        if (searchOpen) {
+            Spacer(Modifier.height(8.dp))
+            InputField(state.filter, onFilter, "Filter files…",
+                Modifier.width(360.dp).focusRequester(searchFocus))
+            LaunchedEffect(Unit) { runCatching { searchFocus.requestFocus() } }
         }
         Spacer(Modifier.height(6.dp))
         Text(statusLine(state), color = MUTED, fontSize = 12.sp)
@@ -247,8 +290,17 @@ private fun BrowseScreen(
             }
         }
     }
-    LaunchedEffect(state.path, state.entries.size) {
-        if (state.entries.isNotEmpty()) runCatching { firstItemFocus.requestFocus() }
+    // Focus the first row on load so the remote has an immediate cursor on the content
+    // (never the search field). Retry briefly: on slower TVs the LazyColumn composes its
+    // first item a frame or two after this effect first runs, so a single requestFocus can
+    // land before the target exists.
+    LaunchedEffect(state.path, state.entries.size, searchOpen) {
+        if (!searchOpen && state.entries.isNotEmpty()) {
+            repeat(10) {
+                if (runCatching { firstItemFocus.requestFocus() }.isSuccess) return@LaunchedEffect
+                kotlinx.coroutines.delay(60)
+            }
+        }
     }
 }
 
