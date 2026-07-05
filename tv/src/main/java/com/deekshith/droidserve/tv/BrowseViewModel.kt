@@ -25,7 +25,8 @@ sealed interface UiScreen {
     data class Discovery(
         val servers: List<DiscoveredServer> = emptyList(),
         val error: String? = null,
-        val connecting: Boolean = false
+        val connecting: Boolean = false,
+        val scanning: Boolean = false
     ) : UiScreen
 
     /** Password prompt for a protected server. */
@@ -67,43 +68,42 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     // Merged results keyed by "host:port" so mDNS + subnet-probe fallback never duplicate.
     private val discovered = LinkedHashMap<String, DiscoveredServer>()
+    private var scanJob: Job? = null
 
     init {
-        // Primary: live mDNS/NSD — every phone advertising _droidserve._tcp appears here.
+        // Primary: live mDNS/NSD — every phone advertising _droidserve._tcp appears here,
+        // at near-zero cost (no polling, no sockets). This is the whole discovery story on
+        // networks that allow multicast.
         viewModelScope.launch {
             discovery.discover().collect { servers ->
                 servers.forEach { discovered["${it.host}:${it.port}"] = it }
                 publish()
             }
         }
-        // Fallback: subnet probe. Needed because many routers block mDNS multicast between
-        // clients, so a reachable phone server would otherwise never show up. Always just
-        // fills the picker — the user still chooses (no auto-connect).
-        //
-        // Adaptive + polite so it never contends with other tools on the TV's Wi-Fi NIC
-        // (e.g. atvtools controlling the TV at the same time): only runs while the picker is
-        // showing, backs off to a slow heartbeat once at least one server is known, and stops
-        // entirely once the user leaves the picker to browse.
-        viewModelScope.launch {
-            while (true) {
-                if (_screen.value is UiScreen.Discovery) {
-                    try {
-                        val found = withContext(Dispatchers.IO) { scanner.scan() }
-                        if (found.isNotEmpty()) {
-                            found.forEach { discovered["${it.host}:${it.port}"] = it }
-                            publish()
-                        }
-                    } catch (_: Exception) {}
-                    // Fast sweeps while nothing is found yet; a slow heartbeat afterwards just
-                    // to catch servers that come online later, keeping bandwidth mostly free.
-                    kotlinx.coroutines.delay(if (discovered.isEmpty()) 6000 else 20000)
-                } else {
-                    // Not on the picker (browsing/playing) — don't scan at all.
-                    kotlinx.coroutines.delay(3000)
-                }
+        // Fallback: ONE subnet probe on launch, for networks that block mDNS multicast so a
+        // reachable phone would otherwise never appear. Deliberately not a loop — continuous
+        // scanning saturates a weak TV's single Wi-Fi NIC and starves other tools (adb /
+        // atvtools). The user can re-scan on demand from the picker.
+        scanOnce()
+    }
+
+    /** Run a single polite subnet sweep. No-op if one is already in flight. */
+    fun scanOnce() {
+        if (scanJob?.isActive == true) return
+        scanJob = viewModelScope.launch {
+            (_screen.value as? UiScreen.Discovery)?.let { _screen.value = it.copy(scanning = true) }
+            try {
+                val found = withContext(Dispatchers.IO) { scanner.scan() }
+                found.forEach { discovered["${it.host}:${it.port}"] = it }
+            } catch (_: Exception) {}
+            (_screen.value as? UiScreen.Discovery)?.let {
+                _screen.value = it.copy(servers = discovered.values.toList(), scanning = false)
             }
         }
     }
+
+    /** User-triggered rescan from the picker. */
+    fun rescan() = scanOnce()
 
     private fun publish() {
         (_screen.value as? UiScreen.Discovery)?.let { cur ->

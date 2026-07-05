@@ -89,7 +89,7 @@ class MainActivity : ComponentActivity() {
                 val screen by vm.screen.collectAsStateWithLifecycle()
                 Box(Modifier.fillMaxSize().background(BG)) {
                     when (val s = screen) {
-                        is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual)
+                        is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual, vm::rescan)
                         is UiScreen.Auth -> AuthScreen(s, vm::submitAuth)
                         is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort)
                     }
@@ -149,7 +149,8 @@ private fun CrashScreen(trace: String) {
 private fun DiscoveryScreen(
     state: UiScreen.Discovery,
     onConnect: (DiscoveredServer) -> Unit,
-    onManual: (String, Int) -> Unit
+    onManual: (String, Int) -> Unit,
+    onRescan: () -> Unit
 ) {
     val firstServerFocus = remember { FocusRequester() }
     Column(Modifier.fillMaxSize().padding(48.dp)) {
@@ -169,9 +170,14 @@ private fun DiscoveryScreen(
                 if (state.servers.isEmpty()) {
                     item {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(color = ACCENT, modifier = Modifier.size(20.dp))
-                            Spacer(Modifier.width(12.dp))
-                            Text("Searching the network…", color = TEXT, fontSize = 15.sp)
+                            if (state.scanning) {
+                                CircularProgressIndicator(color = ACCENT, modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(12.dp))
+                                Text("Searching the network…", color = TEXT, fontSize = 15.sp)
+                            } else {
+                                Text("No servers found. Start DroidServe on your phone, then rescan.",
+                                    color = MUTED, fontSize = 15.sp)
+                            }
                         }
                     }
                 }
@@ -187,7 +193,16 @@ private fun DiscoveryScreen(
                         }
                     }
                 }
-                item { Spacer(Modifier.height(8.dp)); ManualConnect(onManual) }
+                item {
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SortChip(if (state.scanning) "Scanning…" else "🔄 Rescan", false) {
+                            if (!state.scanning) onRescan()
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        ManualConnect(onManual)
+                    }
+                }
             }
         }
     }

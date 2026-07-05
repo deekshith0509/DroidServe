@@ -46,6 +46,36 @@ No internet connection required. No data leaves your local network. No accounts.
 
 ---
 
+## Android TV Companion App
+
+DroidServe ships a native **Android TV app** (the `tv/` module) so you never have to type an
+IP address on a remote. Install it on the TV, start the server on your phone, and the TV finds
+it automatically.
+
+| TV feature | Detail |
+|---|---|
+| **Zero-typing discovery** | The phone advertises `_droidserve._tcp` over mDNS/NSD; the TV lists every phone running DroidServe on the LAN |
+| **Works when mDNS is blocked** | Many routers block multicast between clients — the TV also does a **single, polite subnet probe** on launch (with an on-screen **🔄 Rescan**) so reachable servers still appear |
+| **Pick, don't guess** | Multiple phones can run servers at once; the TV shows the full list and you choose (no auto-select) |
+| **Full D-pad navigation** | Arrow keys move between rows, OK opens folders/files, Back walks up — the file list gets focus by default; search and manual-IP entry are opt-in so text fields never trap the remote |
+| **Native playback** | Clicking a file fires an `ACTION_VIEW` intent, so it opens in the device's own player (VLC, MX, Kodi, a photo viewer, etc). No bundled player — better codecs and hardware decoding for free |
+| **Play on TV (cast)** | Tap 📺 on any video/audio row in the phone web UI; the phone pushes the stream to the TV app, which opens it in the native player. The phone becomes the remote |
+| **Auth aware** | Password-protected servers prompt for credentials; tokenized media URLs stream to external players without re-sending the header |
+| **Android 5.0+** | Runs on old TVs (min SDK 21) |
+
+**Network-friendly by design.** The TV app shares one Wi-Fi NIC with tools like `atvtools`.
+Discovery is built to coexist: mDNS is passive (no polling), the subnet probe uses bounded
+concurrency (≤12 sockets) with a cheap TCP liveness check before any HTTP, runs once per
+launch rather than continuously, and the Wi-Fi multicast lock is acquired once and released
+cleanly (no leak into a permanent high-power state).
+
+```bash
+# Build/install the TV app on an Android TV (adb over USB or network)
+./gradlew :tv:installDebug
+```
+
+---
+
 ## Performance Architecture
 
 DroidServe is built around one principle: **eliminate every unnecessary round-trip**.
