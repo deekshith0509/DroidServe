@@ -408,14 +408,6 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:none}
 .empty{text-align:center;color:var(--mu);padding:60px 20px;font-size:14px}
 .info-foot{margin-top:16px;padding:14px;border:1px solid var(--bd);border-radius:11px;background:var(--sf);font-size:11px;color:var(--mu);line-height:1.7;word-break:break-all;box-shadow:var(--sh)}
 .info-h{color:var(--ac);font-weight:700;margin-bottom:6px;font-size:12px}
-/* Fullscreen in-page media player overlay */
-#dsplay{display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.94);flex-direction:column;align-items:center;justify-content:center;padding:16px;gap:12px}
-#dsclose{align-self:flex-end;background:var(--sf);color:var(--tx);border:1px solid var(--bd);border-radius:10px;padding:10px 18px;font-size:15px;font-weight:600;cursor:pointer}
-#dsclose:hover,#dsclose:focus-visible{border-color:var(--ac);outline:none;box-shadow:0 0 0 3px var(--ac)}
-#dsslot{flex:1;width:100%;display:flex;align-items:center;justify-content:center;min-height:0}
-#dsslot video{max-width:100%;max-height:100%;background:#000}
-#dsslot audio{width:100%;max-width:600px}
-.dserr{position:absolute;bottom:24px;left:16px;right:16px;background:#7c2d12;color:#fed7aa;padding:12px 16px;border-radius:10px;font-size:14px;text-align:center}
 /* Android-TV / D-pad: no mouse, so hide the pointer entirely for a clean 10-foot UI */
 body.tv,body.tv *{cursor:none!important}
 ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
@@ -449,57 +441,34 @@ var t;q.addEventListener('input',function(){clearTimeout(t);t=setTimeout(upd,60)
 // '/' focuses the filter box for quick keyboard search
 document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});
 
-// ── Opening files: play in-page, or hand phones the OS app chooser ───────────
-// Behaviour by device:
-//  • Android TV / desktop / laptop  → video & audio play inline in a fullscreen overlay
-//    (TVs have no VLC/MX and their browsers download otherwise; browsers decode mp4/webm/etc.)
-//  • Android phone/tablet           → video & audio go to the OS app chooser (VLC/MX) via intent://
-//  • Everything else (image/pdf/text/unknown) → normal navigation, browser renders inline
-// The ⬇ button on the right stays download-only on every platform.
+// ── Opening files: hand every file to the OS default app (file-manager behaviour) ──
+// On Android (phone AND TV), clicking a file fires an ACTION_VIEW intent with the file's
+// MIME type, so the OS opens the default handler for that extension — a video player for
+// mkv/mp4, an image viewer for jpg, a PDF reader, etc. — exactly like tapping a file in a
+// file manager. On non-Android (desktop/laptop) the browser handles the plain link.
+// The ⬇ button on the right stays download-only everywhere.
 var ua=navigator.userAgent;
 var isAndroid=/Android/i.test(ua);
-// Android TV / leanback boxes report "TV" or lack "Mobile"; treat those as inline-play.
-var isAndroidTV=isAndroid&&(/TV|BRAVIA|AFT|MiTV|SmartTV|GoogleTV|Leanback|CrKey/i.test(ua)||!/Mobile/i.test(ua));
-var usePhoneIntent=isAndroid&&!isAndroidTV;
 // Hide the mouse cursor on TV / D-pad browsers for a clean 10-foot UI (no pointer device).
-if(isAndroidTV||/TV|Leanback|CrKey/i.test(ua))document.body.classList.add('tv');
+if(/TV|Leanback|CrKey|BRAVIA|AFT|MiTV|GoogleTV/i.test(ua)||(isAndroid&&!/Mobile/i.test(ua)))
+document.body.classList.add('tv');
 
-// Fullscreen in-page media overlay (created lazily).
-function playInline(url,mime,name){
-var ov=document.getElementById('dsplay');
-if(!ov){ov=document.createElement('div');ov.id='dsplay';
-ov.innerHTML='<button id="dsclose" aria-label="Close">✕ Close</button><div id="dsslot"></div>';
-document.body.appendChild(ov);
-ov.querySelector('#dsclose').addEventListener('click',closeInline);
-ov.addEventListener('click',function(e){if(e.target===ov)closeInline();});
-}
-var slot=ov.querySelector('#dsslot');slot.innerHTML='';
-var el=document.createElement(/^audio\//.test(mime)?'audio':'video');
-el.src=url;el.controls=true;el.autoplay=true;el.setAttribute('playsinline','');el.id='dsmedia';
-slot.appendChild(el);
-ov.style.display='flex';
-try{el.focus();}catch(_){}
-el.addEventListener('error',function(){
-slot.insertAdjacentHTML('beforeend','<div class="dserr">⚠ This format can\u2019t play in this browser. Use the ⬇ button to download, or open it in a media-player app.</div>');
-});
-}
-function closeInline(){var ov=document.getElementById('dsplay');if(!ov)return;
-var m=ov.querySelector('#dsmedia');if(m){try{m.pause();}catch(_){}m.src='';}
-ov.style.display='none';ov.querySelector('#dsslot').innerHTML='';}
-document.addEventListener('keydown',function(e){if(e.key==='Escape'||e.key==='GoBack'||e.key==='BrowserBack')closeInline();});
-
+if(isAndroid){
 document.querySelectorAll('.item[data-mime] .item-main').forEach(function(a){
 a.addEventListener('click',function(e){
-var mime=a.closest('.item').dataset.mime||'';
-if(!/^video\/|^audio\//.test(mime))return;   // non-media: let browser render inline
-var abs=a.href,m=abs.match(/^(https?):\/\/([^#]*)$/i);if(!m)return;
+var abs=a.href,mime=a.closest('.item').dataset.mime||'';
+var m=abs.match(/^(https?):\/\/([^#]*)$/i);if(!m)return;   // fall back to normal nav
 e.preventDefault();
-if(usePhoneIntent){
-window.location.href='intent://'+m[2]+'#Intent;scheme='+m[1]+';action=android.intent.action.VIEW;type='+mime+';end';
-}else{
-playInline(abs,mime,a.closest('.item').dataset.name||'');
-}
+// intent:// with ACTION_VIEW + type → OS opens the default app for this file type.
+// browser_fallback_url makes the browser just load the file if no app handles it,
+// instead of failing silently.
+var fb=encodeURIComponent(abs);
+var it='intent://'+m[2]+'#Intent;scheme='+m[1]+';action=android.intent.action.VIEW';
+if(mime)it+=';type='+mime;
+it+=';S.browser_fallback_url='+fb+';end';
+window.location.href=it;
 });});
+}
 document.querySelectorAll('.sb[data-s]').forEach(function(b){
 b.addEventListener('click',function(){
 document.querySelectorAll('.sb[data-s]').forEach(function(x){x.classList.remove('on');});b.classList.add('on');
