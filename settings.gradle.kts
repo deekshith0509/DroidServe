@@ -23,3 +23,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "DroidServe"
 include(":app")
+include(":tv")

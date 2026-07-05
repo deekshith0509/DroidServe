@@ -248,6 +248,29 @@ class HttpServer(
 
         val path   = raw.trimStart('/')
         val params = session.parameters
+
+        // ── Native-client JSON API ──────────────────────────────────────────
+        // Lets the Android TV app (and any client) discover server facts and browse
+        // folders as structured JSON instead of scraping HTML. Media is still fetched
+        // from the same file URLs used by the web UI.
+        if (path == "api/info" || path == "api/list" || path.startsWith("api/list/")) {
+            ServerStateHolder.incrementRequests()
+            val tokQ = if (authNeeded()) "?tok=${FileUtils.encodeSeg(sessionToken)}" else ""
+            val resp = if (path == "api/info") {
+                apiInfoResponse(tokQ)
+            } else {
+                val sub = if (path == "api/list") "" else path.removePrefix("api/list/")
+                val docId = if (sub.isEmpty()) rootDocId
+                            else (resolveFast(sub)?.takeIf { it.isDirectory }?.docId
+                                ?: return errJson(Response.Status.NOT_FOUND, "Not found"))
+                apiListResponse(listFast(docId), sub, tokQ)
+            }
+            if (needsCookie) resp.addHeader(
+                "Set-Cookie", "$COOKIE_NAME=$sessionToken; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
+            )
+            return resp
+        }
+
         val isZip  = options.allowZip && params["zip"]?.firstOrNull() == "1"
         // Always honour an explicit download request — the ⬇ button is always shown, so it
         // must always work regardless of the inline-preview preference.
@@ -388,6 +411,63 @@ class HttpServer(
         val ips = NetworkUtils.allIpv4().joinToString(", ") { "${it.first}=${it.second}" }
         if (ips.isNotEmpty()) facts.add("Interfaces" to ips)
         return facts
+    }
+
+    // -----------------------------------------------------------------------
+    // JSON API — machine-readable listing for native clients (Android TV app)
+    // Hand-rolled JSON keeps zero extra dependencies, matching the project's style.
+    // -----------------------------------------------------------------------
+    private fun apiInfoResponse(tokQ: String): Response {
+        val sb = StringBuilder(256)
+        sb.append('{')
+        sb.append("\"name\":\"").append(jsonEsc(options.title)).append("\",")
+        sb.append("\"ip\":\"").append(jsonEsc(ServerStateHolder.ip.value)).append("\",")
+        sb.append("\"port\":").append(ServerStateHolder.port.value).append(',')
+        sb.append("\"device\":\"").append(jsonEsc("${Build.MANUFACTURER} ${Build.MODEL}")).append("\",")
+        sb.append("\"auth\":").append(authNeeded()).append(',')
+        sb.append("\"tokenQuery\":\"").append(jsonEsc(tokQ)).append("\",")
+        sb.append("\"apiVersion\":1")
+        sb.append('}')
+        return jsonResponse(sb.toString())
+    }
+
+    private fun apiListResponse(entries: List<FileEntry>, urlPath: String, tokQ: String): Response {
+        val base = if (urlPath.isEmpty()) "" else "/" + urlPath.split('/')
+            .filter { it.isNotEmpty() }.joinToString("/") { FileUtils.encodeSeg(it) }
+        val sb = StringBuilder(256 + entries.size * 128)
+        sb.append("{\"path\":\"").append(jsonEsc(urlPath)).append("\",\"entries\":[")
+        for ((i, e) in entries.withIndex()) {
+            if (i > 0) sb.append(',')
+            val href = "$base/${FileUtils.encodeSeg(e.name)}"
+            sb.append('{')
+            sb.append("\"name\":\"").append(jsonEsc(e.name)).append("\",")
+            sb.append("\"isDir\":").append(e.isDirectory).append(',')
+            sb.append("\"size\":").append(e.size).append(',')
+            sb.append("\"modified\":").append(e.lastModified).append(',')
+            sb.append("\"mime\":\"").append(jsonEsc(if (e.isDirectory) "inode/directory" else FileUtils.getMimeType(e.name))).append("\",")
+            // Absolute-from-root href plus token so clients can fetch directly.
+            sb.append("\"url\":\"").append(jsonEsc(href + tokQ)).append('"')
+            sb.append('}')
+        }
+        sb.append("]}")
+        return jsonResponse(sb.toString())
+    }
+
+    private fun jsonResponse(body: String): Response =
+        newFixedLengthResponse(Response.Status.OK, "application/json; charset=utf-8", body)
+            .also { cors(it); it.addHeader("Cache-Control", "no-store") }
+
+    private fun jsonEsc(s: String): String {
+        val out = StringBuilder(s.length + 8)
+        for (c in s) when (c) {
+            '"'  -> out.append("\\\"")
+            '\\' -> out.append("\\\\")
+            '\n' -> out.append("\\n")
+            '\r' -> out.append("\\r")
+            '\t' -> out.append("\\t")
+            else -> if (c < ' ') out.append("\\u%04x".format(c.code)) else out.append(c)
+        }
+        return out.toString()
     }
 
     private fun fileResponse(entry: FileEntry, session: IHTTPSession, forceDownload: Boolean): Response {
@@ -752,6 +832,7 @@ class ServerForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var keepAlive: SilentAudioKeepAlive? = null
+    private var nsd: NsdAdvertiser? = null
     private var autoStopJob: Job? = null
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -832,6 +913,15 @@ class ServerForegroundService : Service() {
                 val ip  = NetworkUtils.getLocalIpAddress()
                 val url = "http://$ip:${cfg.port}"
                 ServerStateHolder.onStarted(ip, cfg.port)
+
+                // Advertise on the LAN via mDNS/NSD so native clients (the Android TV app)
+                // discover this server automatically — no manual IP typing on the remote.
+                try {
+                    nsd?.unregister()
+                    nsd = NsdAdvertiser(this@ServerForegroundService).also {
+                        it.register(cfg.options.title, cfg.port)
+                    }
+                } catch (_: Exception) {}
 
                 withContext(Dispatchers.Main) {
                     (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
@@ -919,6 +1009,8 @@ class ServerForegroundService : Service() {
     }
 
     private fun releaseLocks() {
+        try { nsd?.unregister() } catch (_: Exception) {}
+        nsd = null
         try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
         try { wifiLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
         try { keepAlive?.stop() } catch (_: Exception) {}
