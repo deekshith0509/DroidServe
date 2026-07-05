@@ -417,58 +417,32 @@ class HttpServer(
     // JSON API — machine-readable listing for native clients (Android TV app)
     // Hand-rolled JSON keeps zero extra dependencies, matching the project's style.
     // -----------------------------------------------------------------------
-    private fun apiInfoResponse(tokQ: String): Response {
-        val sb = StringBuilder(256)
-        sb.append('{')
-        sb.append("\"name\":\"").append(jsonEsc(options.title)).append("\",")
-        sb.append("\"ip\":\"").append(jsonEsc(ServerStateHolder.ip.value)).append("\",")
-        sb.append("\"port\":").append(ServerStateHolder.port.value).append(',')
-        sb.append("\"device\":\"").append(jsonEsc("${Build.MANUFACTURER} ${Build.MODEL}")).append("\",")
-        sb.append("\"auth\":").append(authNeeded()).append(',')
-        sb.append("\"tokenQuery\":\"").append(jsonEsc(tokQ)).append("\",")
-        sb.append("\"apiVersion\":1")
-        sb.append('}')
-        return jsonResponse(sb.toString())
-    }
+    private fun apiInfoResponse(tokQ: String): Response =
+        jsonResponse(ApiJson.info(
+            name = options.title,
+            ip = ServerStateHolder.ip.value,
+            port = ServerStateHolder.port.value,
+            device = "${Build.MANUFACTURER} ${Build.MODEL}",
+            auth = authNeeded(),
+            tokenQuery = tokQ
+        ))
 
     private fun apiListResponse(entries: List<FileEntry>, urlPath: String, tokQ: String): Response {
-        val base = if (urlPath.isEmpty()) "" else "/" + urlPath.split('/')
-            .filter { it.isNotEmpty() }.joinToString("/") { FileUtils.encodeSeg(it) }
-        val sb = StringBuilder(256 + entries.size * 128)
-        sb.append("{\"path\":\"").append(jsonEsc(urlPath)).append("\",\"entries\":[")
-        for ((i, e) in entries.withIndex()) {
-            if (i > 0) sb.append(',')
-            val href = "$base/${FileUtils.encodeSeg(e.name)}"
-            sb.append('{')
-            sb.append("\"name\":\"").append(jsonEsc(e.name)).append("\",")
-            sb.append("\"isDir\":").append(e.isDirectory).append(',')
-            sb.append("\"size\":").append(e.size).append(',')
-            sb.append("\"modified\":").append(e.lastModified).append(',')
-            sb.append("\"mime\":\"").append(jsonEsc(if (e.isDirectory) "inode/directory" else FileUtils.getMimeType(e.name))).append("\",")
-            // Absolute-from-root href plus token so clients can fetch directly.
-            sb.append("\"url\":\"").append(jsonEsc(href + tokQ)).append('"')
-            sb.append('}')
+        val rows = entries.map {
+            ApiJson.Row(
+                name = it.name,
+                isDir = it.isDirectory,
+                size = it.size,
+                modified = it.lastModified,
+                mime = if (it.isDirectory) "inode/directory" else FileUtils.getMimeType(it.name)
+            )
         }
-        sb.append("]}")
-        return jsonResponse(sb.toString())
+        return jsonResponse(ApiJson.list(urlPath, rows, tokQ))
     }
 
     private fun jsonResponse(body: String): Response =
         newFixedLengthResponse(Response.Status.OK, "application/json; charset=utf-8", body)
             .also { cors(it); it.addHeader("Cache-Control", "no-store") }
-
-    private fun jsonEsc(s: String): String {
-        val out = StringBuilder(s.length + 8)
-        for (c in s) when (c) {
-            '"'  -> out.append("\\\"")
-            '\\' -> out.append("\\\\")
-            '\n' -> out.append("\\n")
-            '\r' -> out.append("\\r")
-            '\t' -> out.append("\\t")
-            else -> if (c < ' ') out.append("\\u%04x".format(c.code)) else out.append(c)
-        }
-        return out.toString()
-    }
 
     private fun fileResponse(entry: FileEntry, session: IHTTPSession, forceDownload: Boolean): Response {
         val mime = FileUtils.getMimeType(entry.name)

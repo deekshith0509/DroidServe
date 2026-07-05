@@ -83,4 +83,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation("junit:junit:4.13.2")
+    // Real org.json on the JVM test classpath so API round-trip tests can parse the
+    // exact bytes the server emits (the android.jar org.json is a stub in unit tests).
+    testImplementation("org.json:json:20240303")
 }
