@@ -33,10 +33,23 @@ data class RemoteEntry(
     val isVideo: Boolean get() = mime.startsWith("video/")
     val isAudio: Boolean get() = mime.startsWith("audio/")
     val isImage: Boolean get() = mime.startsWith("image/")
+    // Text-ish types that render fine in the in-app viewer. Includes common non-"text/*" MIME
+    // types the server assigns (JSON/XML/JS) and subtitle files (.srt = application/x-subrip,
+    // .vtt = text/vtt) — otherwise clicking a subtitle would be punted to an external player,
+    // which on some TVs has no text handler (or a buggy one that crashes).
     val isText: Boolean get() = mime.startsWith("text/") ||
-        mime == "application/json" || mime == "application/xml" || mime == "application/javascript"
+        mime == "application/json" || mime == "application/xml" || mime == "application/javascript" ||
+        mime == "application/x-subrip" || mime == "application/x-subtitle" || mime == "application/octet-stream" &&
+        name.substringAfterLast('.', "").lowercase() in TEXTISH_EXTS
     val isPlayable: Boolean get() = isVideo || isAudio
 }
+
+// Extensionless or octet-stream files that are really plain text (the web UI treats these inline
+// too). Used as a fallback when the MIME type is uninformative.
+private val TEXTISH_EXTS = setOf(
+    "srt","vtt","txt","md","log","csv","ini","conf","cfg","json","xml","yaml","yml","toml",
+    "kt","java","py","js","ts","c","h","cpp","sh","gradle","properties"
+)
 
 data class Listing(
     val path: String,
