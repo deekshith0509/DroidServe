@@ -32,7 +32,9 @@ No internet connection required. No data leaves your local network. No accounts.
 |---|---|
 | **Instant file browser** | Clean web UI with live search, grouped sort (folders first), clickable breadcrumbs, and file icons |
 | **Light / dark theme** | One-tap theme toggle in the web UI, remembered per device |
-| **Stream media** | Video and audio play in-browser via HTTP range requests; on Android, tapping opens the OS app chooser (VLC/MX) |
+| **Stream media** | Video and audio play in-browser with a built-in player overlay (native controls, folder playlist, resume-where-you-left-off); on Android, tapping opens the OS app chooser (VLC/MX) |
+| **Subtitles** | Sidecar `.srt`/`.vtt` files (e.g. `movie.en.srt`) are auto-detected and offered as selectable subtitle tracks; SubRip is converted to WebVTT on the fly |
+| **Play in your own player** | On desktop/laptop, formats the browser can't decode (mkv/avi/mov) offer "Open in default player" — a one-tap `.m3u` handoff to VLC / Kodi / mpv / MPC-HC on any OS |
 | **Inline preview** | Images, PDFs, text, code, and extensionless files render directly in the browser |
 | **Download anything** | Every file row has a ⬇ download button; folders download as ZIP |
 | **TV & remote friendly** | Arrow-key spatial navigation, visible focus rings, and overscan padding for Android TV / D-pad browsers |
@@ -118,7 +120,7 @@ Storage         Android SAF (Storage Access Framework)
 Concurrency     Java ThreadPoolExecutor + Kotlin Coroutines
 State           Kotlin StateFlow (reactive, thread-safe)
 Icon            VectorDrawable + Canvas (no raster images)
-Min SDK         Android 5.0 (API 21)
+Min SDK         Android 7.0 (API 24) · TV app: Android 5.0 (API 21)
 Target SDK      Android 15 (API 35)
 ```
 
@@ -167,16 +169,17 @@ cd DroidServe
 - Android Studio Hedgehog or newer
 - Android Gradle Plugin 8.3+
 - Kotlin 1.9+
-- Device running Android 5.0+
+- Phone app: Android 7.0+ (API 24) · TV app: Android 5.0+ (API 21)
 
-### Dependencies (`app/build.gradle`)
+### Dependencies (`app/build.gradle.kts`)
 
-```groovy
+```kotlin
 dependencies {
-    implementation 'fi.iki.elonen:nanohttpd:2.3.1'
-    implementation 'androidx.documentfile:documentfile:1.0.1'
-    implementation 'androidx.compose.material3:material3:1.2.0'
-    implementation 'com.google.zxing:core:3.5.3'
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+    implementation("androidx.documentfile:documentfile:1.0.1")
+    implementation(platform("androidx.compose:compose-bom:2024.09.03"))
+    implementation("androidx.compose.material3:material3")
+    implementation("com.google.zxing:core:3.5.3")
 }
 ```
 
@@ -201,9 +204,11 @@ dependencies {
 
 ### Downloading & Opening Files
 
-- **Click a filename** → opens/streams in the browser (images, video, audio, PDF, text). On Android, video/audio open in the system app chooser (VLC, MX Player, etc.)
-- **Click ⬇** → forces download to your device (always available)
+- **Click a video/audio file** → on desktop/laptop it opens in a built-in player overlay (native controls, subtitles, folder playlist, resume). If your browser can't decode the format (mkv/avi/mov), use **Open in default player** to hand it to VLC/Kodi/mpv. On Android, video/audio open in the system app chooser (VLC, MX Player, etc.)
+- **Click an image/PDF/text file** → renders inline in the browser
+- **Click ⬇** → forces download to your device (hidden when "Allow file downloads" is off)
 - **Click ⬇ ZIP** on a folder → downloads entire folder as a `.zip`
+- **Subtitles** → drop a `movie.srt` (or `movie.en.srt`) next to `movie.mp4`; it appears as a subtitle track in the player
 - **On a TV / with a remote** → use the arrow keys to move between items and press OK to open
 
 ### Password Protection
