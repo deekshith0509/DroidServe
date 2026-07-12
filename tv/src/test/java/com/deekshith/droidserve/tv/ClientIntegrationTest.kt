@@ -102,6 +102,12 @@ class ClientIntegrationTest {
             "/api/list/Movies" -> writeJson(c, ApiFmt.list("Movies", listOf(
                 ApiFmt.Row("a b.mp4", false, 10, "video/mp4")
             ), tokQ))
+            // Folder whose name has a space + ampersand: the client MUST percent-encode each
+            // path segment (My%20Vids%20%26%20More) or this route never matches and the request
+            // 404s. Regression guard for navigating into folders with special characters.
+            "/api/list/My%20Vids%20%26%20More" -> writeJson(c, ApiFmt.list("My Vids & More", listOf(
+                ApiFmt.Row("ok.mp4", false, 5, "video/mp4")
+            ), tokQ))
             "/api/tv/poll" -> {
                 val cmd = pendingCast
                 if (cmd == null) write(c, 204, "application/json", ByteArray(0))
@@ -163,6 +169,19 @@ class ClientIntegrationTest {
     @Test fun list_nested_encodesSpaces() {
         assertEquals("${base()}/Movies/a%20b.mp4",
             DroidServeClient(base()).listDir("Movies").entries[0].url)
+    }
+
+    @Test fun list_folderWithSpecialCharsIsPercentEncoded() {
+        // Navigating into "My Vids & More" must percent-encode the path or the request 404s.
+        val entries = DroidServeClient(base()).listDir("My Vids & More").entries
+        assertEquals(1, entries.size)
+        assertEquals("ok.mp4", entries[0].name)
+    }
+
+    @Test fun encodeSeg_matchesPhoneEncoding() {
+        assertEquals("My%20Vids%20%26%20More", encodeSeg("My Vids & More"))
+        assertEquals("caf%C3%A9", encodeSeg("café"))
+        assertEquals("file-1.0_name~", encodeSeg("file-1.0_name~"))
     }
 
     @Test fun poll_returnsNullWhenNoCommand() {
