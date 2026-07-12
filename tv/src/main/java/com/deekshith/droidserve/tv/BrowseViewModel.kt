@@ -20,7 +20,13 @@ enum class SortMode { DEFAULT, NAME, SIZE }
 enum class ViewerKind { TEXT, IMAGE }
 
 /** A media stream to hand to the OS default player (VLC/MX/etc) via ACTION_VIEW. */
-data class OpenRequest(val url: String, val mime: String, val subUrl: String? = null)
+data class OpenRequest(
+    val url: String,
+    val mime: String,
+    val subUrl: String? = null,
+    /** Resume position in ms to hand the external player, or 0 to start from the beginning. */
+    val resumeMs: Int = 0
+)
 
 /** The screen the UI is currently showing. */
 sealed interface UiScreen {
@@ -98,6 +104,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private val discovery = ServerDiscovery(app)
     private val scanner = SubnetScanner(app)
     private val creds = CredentialStore(app)
+    private val playback = PlaybackStore(app)
 
     private val _screen = MutableStateFlow<UiScreen>(UiScreen.Discovery())
     val screen: StateFlow<UiScreen> = _screen.asStateFlow()
@@ -348,10 +355,20 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
             }
             else -> {
                 // Video (or anything else) → native player via ACTION_VIEW, where hardware
-                // decoding and broad codec support matter.
-                _open.tryEmit(OpenRequest(entry.url, entry.mime, entry.subUrl))
+                // decoding and broad codec support matter. Hand it the last resume position so
+                // playback continues where it stopped.
+                _open.tryEmit(OpenRequest(entry.url, entry.mime, entry.subUrl, playback.get(entry.url)))
             }
         }
+    }
+
+    /**
+     * Record where an external video player stopped so the next play resumes there. Called by the
+     * Activity when the player returns a result (VLC/MX report extra_position / position in ms).
+     * A non-positive value means "start over".
+     */
+    fun recordPlaybackPosition(url: String, positionMs: Int) {
+        if (positionMs > 0) playback.save(url, positionMs) else playback.clear(url)
     }
 
     // ── Audio player controls ─────────────────────────────────────────────
