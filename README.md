@@ -57,12 +57,16 @@ it automatically.
 | TV feature | Detail |
 |---|---|
 | **Zero-typing discovery** | The phone advertises `_droidserve._tcp` over mDNS/NSD; the TV lists every phone running DroidServe on the LAN |
-| **Works when mDNS is blocked** | Many routers block multicast between clients — the TV also does a **single, polite subnet probe** on launch (with an on-screen **🔄 Rescan**) so reachable servers still appear |
+| **Works when mDNS is blocked** | Many routers block multicast between clients — the TV also does a **single, polite subnet probe** on launch (with an on-screen **🔄 Rescan**) so reachable servers still appear (protected servers included) |
 | **Pick, don't guess** | Multiple phones can run servers at once; the TV shows the full list and you choose (no auto-select) |
 | **Full D-pad navigation** | Arrow keys move between rows, OK opens folders/files, Back walks up — the file list gets focus by default; search and manual-IP entry are opt-in so text fields never trap the remote |
-| **Native playback** | Clicking a file fires an `ACTION_VIEW` intent, so it opens in the device's own player (VLC, MX, Kodi, a photo viewer, etc). No bundled player — better codecs and hardware decoding for free |
-| **Play on TV (cast)** | Tap 📺 on any video/audio row in the phone web UI; the phone pushes the stream to the TV app, which opens it in the native player. The phone becomes the remote |
-| **Auth aware** | Password-protected servers prompt for credentials; tokenized media URLs stream to external players without re-sending the header |
+| **In-app viewers** | Text (incl. `.srt`/`.log`/config), images, and audio open **inside the app** — no dependence on an external viewer that may be missing or broken on old TVs |
+| **In-app audio player** | Songs play in-app via the native `MediaPlayer` with the folder as a playlist (Prev/Next, auto-advance, live position) |
+| **Native video playback** | Video fires an `ACTION_VIEW` intent so it opens in the device's own player (VLC, MX, Kodi) for hardware decoding and broad codecs — no bundled player |
+| **Resume video** | The TV remembers where each video stopped and asks the player to resume there; the resume cache self-prunes if it grows past 100 KB |
+| **Subtitles** | Sidecar `.srt`/`.vtt` next to a video are handed to the external player (VLC/MX subtitle extras) |
+| **Play on TV (cast)** | Tap 📺 on any video/audio row in the phone web UI; the phone pushes the stream (and any subtitle) to the TV app, which opens it in the native player. The phone becomes the remote |
+| **Auth aware** | Password-protected servers prompt for credentials, **remember the password per server** (auto-reconnect next time, re-prompt only if it changed), and stream tokenized media URLs to external players without re-sending the header |
 | **Android 5.0+** | Runs on old TVs (min SDK 21) |
 
 **Network-friendly by design.** The TV app shares one Wi-Fi NIC with tools like `atvtools`.
@@ -129,24 +133,33 @@ Target SDK      Android 15 (API 35)
 ## Project Structure
 
 ```
-app/src/main/java/com/deekshith/droidserve/
-├── MainActivity.kt          # Compose UI — folder picker, settings, status, QR
-├── HttpServer.kt            # NanoHTTPD server + foreground service
-│   ├── HttpServer           # Request routing, file/directory/ZIP serving
+app/src/main/java/com/deekshith/droidserve/     # Phone server
+├── MainActivity.kt          # Compose UI — folder picker, settings, status, QR, live log
+├── HttpServer.kt            # NanoHTTPD server + ServerForegroundService
+│                            #   request routing, file/dir/ZIP serving, ranges, auth,
+│                            #   .m3u + .vtt endpoints, network-change IP refresh
 │   ├── DirectoryCache       # TTL-LRU cache for SAF listings
-│   └── ServerForegroundService  # Lifecycle management, notifications
-├── FileUtils.kt             # MIME detection, HTML builder, ZIP streaming
-├── FileEntry.kt             # Lightweight SAF record (replaces DocumentFile)
-├── IconDrawable.kt          # Programmatic Canvas icon — no raster assets
+│   └── FileEntry            # Lightweight SAF record (replaces DocumentFile)
+├── FileUtils.kt             # MIME, HTML builder + in-browser player, SRT→VTT
+├── ApiJson.kt               # Hand-rolled JSON for the /api/* native-client API
+├── CastQueue.kt             # Real-time phone→TV cast channel
+├── NsdAdvertiser.kt         # mDNS/NSD advertising (_droidserve._tcp)
 ├── NetworkUtils.kt          # Local IP detection (multi-interface fallback)
-└── ServerStateHolder.kt     # Shared reactive state (StateFlow + AtomicInteger)
+├── ServerStateHolder.kt     # Shared reactive state (StateFlow + AtomicInteger)
+├── ServerLog.kt             # In-memory request log ring buffer
+├── Diagnostics.kt           # Device/app/storage facts for the dashboard
+└── Icondrawable.kt          # Programmatic Canvas icon — no raster assets
 
-app/src/main/res/drawable/
-├── ic_launcher_foreground.xml   # Broadcast tower — VectorDrawable
-├── ic_launcher_background.xml   # Navy gradient — VectorDrawable
-├── ic_launcher_round.xml        # Round variant — VectorDrawable
-├── ic_launcher.xml              # Adaptive icon manifest
-└── ic_launcher_monochrome.xml   # Themed icon (Android 13+)
+tv/src/main/java/com/deekshith/droidserve/tv/    # Android TV companion
+├── MainActivity.kt          # Compose 10-foot UI + in-app text/image/audio viewers
+├── BrowseViewModel.kt       # Screen state machine, discovery, playback routing
+├── DroidServeClient.kt      # HTTP client for the /api/* JSON API
+├── ServerDiscovery.kt       # mDNS/NSD discovery (multicast lock, serialized resolves)
+├── SubnetScanner.kt         # Polite subnet-probe fallback when mDNS is blocked
+├── CredentialStore.kt       # Per-server remembered passwords
+├── PlaybackStore.kt         # Video resume positions (100 KB self-pruning cache)
+├── Models.kt                # DiscoveredServer / RemoteEntry / ServerInfo / CastCommand
+└── App.kt                   # Global crash-to-file handler
 ```
 
 ---
