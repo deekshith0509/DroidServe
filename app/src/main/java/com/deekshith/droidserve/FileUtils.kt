@@ -264,10 +264,12 @@ object FileUtils {
                     sb.append("""<button class="btn-tv" data-path="""").append('"').append(escHtml(rawPath))
                     sb.append("""" title="Play on TV">📺</button>""")
                 }
-                // Download button pinned to the right edge — always available so users can
-                // save any file directly, independent of the inline open/preview behaviour.
-                sb.append("""<a class="btn-dl" href="/""").append(href)
-                sb.append("""?dl=1""").append(tokAmp).append("""" download="${escHtml(eName)}" title="Download">⬇</a>""")
+                // Download button pinned to the right edge. Shown only when downloads are
+                // allowed; with the option off the server is preview/stream-only.
+                if (allowDownload) {
+                    sb.append("""<a class="btn-dl" href="/""").append(href)
+                    sb.append("""?dl=1""").append(tokAmp).append("""" download="${escHtml(eName)}" title="Download">⬇</a>""")
+                }
                 sb.append("</div>")
             }
         }
@@ -648,10 +650,12 @@ stop();fb.classList.remove('on');vs.style.display='';
 // External-player + download links (always available, work for every codec).
 var m3u=url+(url.indexOf('?')>=0?'&':'?')+'m3u=1';
 var dl=url+(url.indexOf('?')>=0?'&':'?')+'dl=1';
-extWrap.innerHTML='<a href="'+m3u+'">🎬 Open in default player</a><a href="'+dl+'" download>⬇ Download</a>';
+// Downloads may be disabled server-side (no .btn-dl rendered on any row) — respect that.
+var dlOn=!!document.querySelector('.btn-dl');
+var dlLink=dlOn?'<a class="pl-btn alt" href="'+dl+'" download>⬇ Download</a>':'';
+extWrap.innerHTML='<a href="'+m3u+'">🎬 Open in default player</a>'+(dlOn?'<a href="'+dl+'" download>⬇ Download</a>':'');
 // Prominent buttons for the fallback panel (used when the browser can't decode in-page).
-fba.innerHTML='<a class="pl-btn" href="'+m3u+'">🎬 Open in default player</a>'+
-'<a class="pl-btn alt" href="'+dl+'" download>⬇ Download</a>';
+fba.innerHTML='<a class="pl-btn" href="'+m3u+'">🎬 Open in default player</a>'+dlLink;
 var el=document.createElement(kind==='a'?'audio':'video');
 el.controls=true;el.autoplay=true;el.setAttribute('playsinline','');el.preload='auto';
 el.setAttribute('crossorigin','anonymous');

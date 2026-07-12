@@ -306,9 +306,11 @@ class HttpServer(
         }
 
         val isZip  = options.allowZip && params["zip"]?.firstOrNull() == "1"
-        // Always honour an explicit download request — the ⬇ button is always shown, so it
-        // must always work regardless of the inline-preview preference.
-        val isDl   = params["dl"]?.firstOrNull() == "1"
+        // Forced-download (?dl=1) is honoured only when downloads are enabled. With the option
+        // off the server is preview/stream-only: the ⬇ button is hidden in the UI and a manual
+        // ?dl=1 is ignored (the file still streams inline), so "Allow file downloads = off"
+        // actually means something instead of being a no-op.
+        val isDl   = options.allowDownload && params["dl"]?.firstOrNull() == "1"
         // ?m3u=1 → hand back a one-line playlist pointing at the real (token-carrying) media URL.
         // Opening it launches the OS default media player (VLC / Kodi / mpv / MPC-HC) on ANY
         // desktop OS — the only cross-platform way to route a stream to an installed native
