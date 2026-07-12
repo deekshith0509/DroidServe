@@ -309,6 +309,11 @@ class HttpServer(
         // Always honour an explicit download request — the ⬇ button is always shown, so it
         // must always work regardless of the inline-preview preference.
         val isDl   = params["dl"]?.firstOrNull() == "1"
+        // ?m3u=1 → hand back a one-line playlist pointing at the real (token-carrying) media URL.
+        // Opening it launches the OS default media player (VLC / Kodi / mpv / MPC-HC) on ANY
+        // desktop OS — the only cross-platform way to route a stream to an installed native
+        // player from a sandboxed browser (JS cannot enumerate installed apps).
+        val isM3u  = params["m3u"]?.firstOrNull() == "1"
 
         // Count only authenticated requests that resolve to a real, servable resource
         // (not OPTIONS / 401 / 403 / 404). Incrementing here also keeps the inactivity
@@ -332,6 +337,7 @@ class HttpServer(
                 resolved.isDirectory && method == Method.HEAD -> dirHeadResponse()
                 resolved.isDirectory && isZip                 -> zipResponse(listFast(resolved.docId), resolved.name)
                 resolved.isDirectory                          -> htmlResponse(listFast(resolved.docId), path, resolved.name)
+                isM3u                                         -> m3uResponse(resolved, path)
                 else                                          -> fileResponse(resolved, session, isDl)
             }
         }
@@ -595,6 +601,30 @@ class HttpServer(
             it.addHeader("Cache-Control", "no-store")
             cors(it)
         }
+    }
+
+    // Build an extended-M3U playlist with a single entry pointing at this file's absolute,
+    // token-carrying URL. Browsers download it and the OS opens it with the default media
+    // player (VLC / Kodi / mpv / MPC-HC), which then streams the URL natively — giving broad
+    // codec support (mkv/avi/mov/flac) on desktops where the browser itself cannot decode.
+    private fun m3uResponse(entry: FileEntry, relPath: String): Response {
+        val tokQ = if (authNeeded()) "?tok=${FileUtils.encodeSeg(sessionToken)}" else ""
+        val href = "/" + relPath.split('/').filter { it.isNotEmpty() }
+            .joinToString("/") { FileUtils.encodeSeg(it) }
+        val absUrl = "http://${ServerStateHolder.ip.value}:${ServerStateHolder.port.value}$href$tokQ"
+        val title  = entry.name.replace('\n', ' ').replace('\r', ' ')
+        val body = "#EXTM3U\r\n#EXTINF:-1,$title\r\n$absUrl\r\n"
+        // audio/x-mpegurl is the most widely-recognised M3U MIME across OSes/players.
+        return newFixedLengthResponse(Response.Status.OK, "audio/x-mpegurl", body).also {
+            it.addHeader("Content-Disposition", contentDisposition("${playlistBaseName(entry.name)}.m3u", inline = false))
+            it.addHeader("Cache-Control", "no-store")
+            cors(it)
+        }
+    }
+
+    private fun playlistBaseName(name: String): String {
+        val dot = name.lastIndexOf('.')
+        return if (dot > 0) name.substring(0, dot) else name
     }
 
     private fun zipResponse(entries: List<FileEntry>, dirName: String): Response {

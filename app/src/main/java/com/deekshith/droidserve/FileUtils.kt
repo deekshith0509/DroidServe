@@ -208,8 +208,13 @@ object FileUtils {
                 val date = formatDate(e.lastModified)
                 val meta = if (date.isEmpty()) formatSize(e.size) else "${formatSize(e.size)} · $date"
                 val mime = getMimeType(eName)
+                val isVideo = mime.startsWith("video/")
+                val isAudio = mime.startsWith("audio/")
+                // data-play marks streamable media so the in-browser player overlay intercepts
+                // the click (v=video, a=audio) and can build a next/prev playlist for the folder.
+                val playAttr = when { isVideo -> """ data-play="v"""" ; isAudio -> """ data-play="a"""" ; else -> "" }
                 // Every file carries its mime so client JS can offer "open with" (Android chooser).
-                sb.append("""<div class="item file" data-name="${escHtml(eName)}" data-size="${e.size}" data-mime="${escHtml(mime)}">""")
+                sb.append("""<div class="item file" data-name="${escHtml(eName)}" data-size="${e.size}" data-mime="${escHtml(mime)}"$playAttr>""")
                 // Tapping the name opens the file directly: the browser plays/shows it inline
                 // where it can; on Android, JS below hands it to the OS "open with" chooser
                 // (VLC/MX for video, etc.). The ⬇ button is the only download action.
@@ -221,7 +226,7 @@ object FileUtils {
                 // "Play on TV" — only for streamable media. Casts this file to a DroidServe TV
                 // app on the same network via /api/cast; the TV opens it in its own native
                 // player (VLC/MX/etc). data-path carries the encoded relative path.
-                if (mime.startsWith("video/") || mime.startsWith("audio/")) {
+                if (isVideo || isAudio) {
                     val rawPath = if (urlPath.isEmpty()) eName else "${urlPath.trimEnd('/')}/$eName"
                     sb.append("""<button class="btn-tv" data-path="""").append('"').append(escHtml(rawPath))
                     sb.append("""" title="Play on TV">📺</button>""")
@@ -423,6 +428,33 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:none}
 /* Android-TV / D-pad: no mouse, so hide the pointer entirely for a clean 10-foot UI */
 body.tv,body.tv *{cursor:none!important}
 ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
+/* ── In-browser media player overlay ─────────────────────────────────────── */
+.pl-ov{position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.86);display:none;flex-direction:column;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(4px)}
+.pl-ov.on{display:flex}
+.pl-box{background:var(--sf);border:1px solid var(--bd);border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,.5);width:min(960px,96vw);max-height:94vh;display:flex;flex-direction:column;overflow:hidden}
+.pl-hd{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--bd)}
+.pl-ttl{flex:1;min-width:0;font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--tx)}
+.pl-x{background:var(--sf2);border:1px solid var(--bd);color:var(--tx);border-radius:8px;width:34px;height:34px;font-size:16px;cursor:pointer;flex-shrink:0}
+.pl-x:hover{border-color:var(--ac);color:var(--ac)}
+.pl-stage{background:#000;display:flex;align-items:center;justify-content:center;min-height:200px;position:relative}
+.pl-stage video{width:100%;max-height:70vh;display:block;background:#000}
+.pl-stage audio{width:92%;margin:28px auto}
+.pl-fallback{display:none;flex-direction:column;align-items:center;gap:14px;padding:40px 24px;text-align:center;color:var(--tx)}
+.pl-fallback.on{display:flex}
+.pl-fallback .big{font-size:40px}
+.pl-fallback .msg{font-size:14px;color:var(--mu);max-width:440px;line-height:1.5}
+.pl-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+.pl-btn{background:var(--gz);color:#fff;border:none;border-radius:9px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:7px;transition:filter .12s}
+.pl-btn:hover{filter:brightness(1.13)}
+.pl-btn.alt{background:var(--sf2);color:var(--tx);border:1px solid var(--bd)}
+.pl-btn.alt:hover{border-color:var(--ac);color:var(--ac);filter:none}
+.pl-ft{display:flex;align-items:center;gap:8px;padding:10px 14px;border-top:1px solid var(--bd);flex-wrap:wrap}
+.pl-nav{background:var(--sf2);border:1px solid var(--bd);color:var(--tx);border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer;transition:border-color .12s}
+.pl-nav:hover:not(:disabled){border-color:var(--ac);color:var(--ac)}
+.pl-nav:disabled{opacity:.4;cursor:default}
+.pl-ext{margin-left:auto;font-size:12px;color:var(--mu);display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap}
+.pl-ext a{color:var(--ac);text-decoration:none;border:1px solid var(--bd);border-radius:7px;padding:6px 10px}
+.pl-ext a:hover{border-color:var(--ac)}
 </style></head>
 <body>
 <header>
@@ -437,6 +469,22 @@ body.tv,body.tv *{cursor:none!important}
 <main>"""
 
     private val HTML_TAIL = """</main>
+<div class="pl-ov" id="plov">
+<div class="pl-box">
+<div class="pl-hd"><div class="pl-ttl" id="plttl"></div><button class="pl-x" id="plx" title="Close (Esc)">✕</button></div>
+<div class="pl-stage" id="plstage"></div>
+<div class="pl-fallback" id="plfb">
+<div class="big">🎬</div>
+<div class="msg" id="plfbm"></div>
+<div class="pl-actions" id="plfba"></div>
+</div>
+<div class="pl-ft">
+<button class="pl-nav" id="plprev">‹ Prev</button>
+<button class="pl-nav" id="plnext">Next ›</button>
+<span class="pl-ext" id="plext"></span>
+</div>
+</div>
+</div>
 <script>
 (function(){
 // Theme toggle — persisted in localStorage, defaults to dark.
@@ -479,6 +527,74 @@ var it='intent://'+m[2]+'#Intent;scheme='+m[1]+';action=android.intent.action.VI
 if(mime)it+=';type='+mime;
 it+=';S.browser_fallback_url='+fb+';end';
 window.location.href=it;
+});});
+}
+
+// ── In-browser media player (desktop / laptop / non-Android) ──────────────
+// Clicking a video/audio row opens a modal player INSTEAD of navigating away. The browser
+// plays everything it can decode natively (mp4/webm/mp3/ogg/wav...). For containers/codecs
+// the browser can't decode (mkv/avi/mov, often flac) we can't magically enumerate installed
+// apps from a sandbox — so we offer "Open in default player", which downloads a one-line .m3u
+// playlist that the OS hands to VLC / Kodi / mpv / MPC-HC (whatever is the user's default),
+// and that native player streams the URL with full codec support. Also always offers Download.
+if(!isAndroid){
+var media=all.filter(function(e){return e.dataset.play;});
+var ov=document.getElementById('plov'),vs=document.getElementById('plstage'),
+tt=document.getElementById('plttl'),fb=document.getElementById('plfb'),fbm=document.getElementById('plfbm'),
+prevB=document.getElementById('plprev'),nextB=document.getElementById('plnext'),
+extWrap=document.getElementById('plext');
+var curEl=null,curIdx=-1;
+var fba=document.getElementById('plfba');
+function stop(){if(curEl){try{curEl.pause();}catch(_){}curEl.removeAttribute('src');try{curEl.load();}catch(_){}curEl.remove();curEl=null;}}
+function close(){stop();ov.classList.remove('on');document.body.style.overflow='';}
+function canPlay(el,mime){try{return !!(el.canPlayType&&el.canPlayType(mime).replace('no',''));}catch(_){return false;}}
+function playAt(idx){
+if(idx<0||idx>=media.length)return;
+curIdx=idx;var it=media[idx];
+var a=it.querySelector('.item-main'),url=a.getAttribute('href');
+var mime=it.dataset.mime||'',name=it.dataset.name||'',kind=it.dataset.play;
+tt.textContent=name;
+stop();fb.classList.remove('on');vs.style.display='';
+// External-player + download links (always available, work for every codec).
+var m3u=url+(url.indexOf('?')>=0?'&':'?')+'m3u=1';
+var dl=url+(url.indexOf('?')>=0?'&':'?')+'dl=1';
+extWrap.innerHTML='<a href="'+m3u+'">🎬 Open in default player</a><a href="'+dl+'" download>⬇ Download</a>';
+// Prominent buttons for the fallback panel (used when the browser can't decode in-page).
+fba.innerHTML='<a class="pl-btn" href="'+m3u+'">🎬 Open in default player</a>'+
+'<a class="pl-btn alt" href="'+dl+'" download>⬇ Download</a>';
+var el=document.createElement(kind==='a'?'audio':'video');
+el.controls=true;el.autoplay=true;el.setAttribute('playsinline','');el.preload='auto';
+var supported=canPlay(el,mime);
+if(supported){
+el.src=url;vs.appendChild(el);curEl=el;
+el.addEventListener('error',function(){showFallback();});
+// When a track finishes, auto-advance to the next playable media in the folder.
+el.addEventListener('ended',function(){if(curIdx+1<media.length)playAt(curIdx+1);});
+try{el.play&&el.play().catch(function(){});}catch(_){}
+}else{
+showFallback();
+}
+updNav();
+}
+function showFallback(){
+stop();vs.style.display='none';fb.classList.add('on');
+fbm.textContent='Your browser can\u2019t play this format in-page. Open it in your default media player (VLC / Kodi / mpv), or download it.';
+}
+function updNav(){prevB.disabled=curIdx<=0;nextB.disabled=curIdx>=media.length-1;}
+prevB.addEventListener('click',function(){if(curIdx>0)playAt(curIdx-1);});
+nextB.addEventListener('click',function(){if(curIdx<media.length-1)playAt(curIdx+1);});
+document.getElementById('plx').addEventListener('click',close);
+ov.addEventListener('click',function(e){if(e.target===ov)close();});
+document.addEventListener('keydown',function(e){if(!ov.classList.contains('on'))return;
+if(e.key==='Escape')close();
+else if(e.key==='ArrowRight'&&!e.target.matches('video,audio')){if(curIdx<media.length-1){e.preventDefault();playAt(curIdx+1);}}
+else if(e.key==='ArrowLeft'&&!e.target.matches('video,audio')){if(curIdx>0){e.preventDefault();playAt(curIdx-1);}}
+});
+media.forEach(function(it){
+it.querySelector('.item-main').addEventListener('click',function(e){
+e.preventDefault();
+ov.classList.add('on');document.body.style.overflow='hidden';
+playAt(media.indexOf(it));
 });});
 }
 
