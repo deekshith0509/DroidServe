@@ -490,9 +490,12 @@ class HttpServer(
 
         if (session.method == Method.HEAD) {
             try { pfd?.close() } catch (_: Exception) {}
-            // null body + declared size → NanoHTTPD emits a single correct Content-Length and no body
-            // (adding Content-Length manually produced a duplicate header)
-            return newFixedLengthResponse(Response.Status.OK, mime, null, size).also {
+            // NanoHTTPD zeroes Content-Length whenever the body InputStream is null (verified
+            // against 2.3.1). A HEAD must still advertise the real size so clients that probe
+            // before downloading (download managers, video players, curl -C) know the length and
+            // that ranges are supported. Passing a non-null EMPTY stream makes NanoHTTPD emit the
+            // declared size, and because the request method is HEAD it still writes no body.
+            return newFixedLengthResponse(Response.Status.OK, mime, ByteArrayInputStream(ByteArray(0)), size).also {
                 it.addHeader("Accept-Ranges", "bytes")
                 it.addHeader("Content-Disposition", disp)
                 cors(it)
