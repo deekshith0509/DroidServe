@@ -129,6 +129,11 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                     startPollLoop()
                     openFolder(server, "")
                 }
+            } catch (e: AuthException) {
+                // A properly-secured server requires credentials even for /api/info, so the
+                // probe itself 401s. That is NOT an error — it means "log in", so route to the
+                // password prompt instead of showing an "unreachable" message.
+                _screen.value = UiScreen.Auth(server)
             } catch (e: Exception) {
                 _screen.value = UiScreen.Discovery(
                     servers = (_screen.value as? UiScreen.Discovery)?.servers ?: emptyList(),
