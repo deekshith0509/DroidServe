@@ -846,6 +846,9 @@ class ServerForegroundService : Service() {
     private var nsd: NsdAdvertiser? = null
     private var autoStopJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    // Single-flight refresh: a new connectivity event cancels the previous pending refresh so
+    // rapid toggles can never run overlapping mDNS re-registers (which would leak a listener).
+    private var networkChangeJob: Job? = null
     // Title/port of the currently advertised server, so a network change can re-publish the
     // notification and re-register mDNS with the new IP without re-reading the whole config.
     @Volatile private var currentTitle: String = "DroidServe"
@@ -990,7 +993,10 @@ class ServerForegroundService : Service() {
     private fun onNetworkChanged() {
         // Only meaningful while a server is actually running.
         if (stopped || synchronized(lock) { httpServer } == null) return
-        serviceScope.launch {
+        // Coalesce bursts of callbacks (a transport switch fires several): cancel any pending
+        // refresh so only the latest runs — no overlapping mDNS re-registers.
+        networkChangeJob?.cancel()
+        networkChangeJob = serviceScope.launch {
             // Interfaces can take a moment to settle after a transport switch.
             delay(600)
             if (stopped || synchronized(lock) { httpServer } == null) return@launch
