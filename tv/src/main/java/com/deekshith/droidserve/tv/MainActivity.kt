@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -43,6 +44,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -51,6 +54,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private val BG = Color(0xFF0F172A)
 private val SURFACE = Color(0xFF1E293B)
@@ -92,6 +96,7 @@ class MainActivity : ComponentActivity() {
                         is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual, vm::rescan)
                         is UiScreen.Auth -> AuthScreen(s, vm::submitAuth, vm::forgetSaved)
                         is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort, vm::clearCastToast)
+                        is UiScreen.Viewer -> ViewerScreen(s)
                     }
                 }
             }
@@ -282,6 +287,59 @@ private fun AuthScreen(
         }
         Text("Your password is saved for this server and reused next time.",
             color = MUTED, fontSize = 12.sp, modifier = Modifier.padding(top = 16.dp))
+    }
+}
+
+// ── In-app viewer (text + image) ────────────────────────────────────────────
+@Composable
+private fun ViewerScreen(state: UiScreen.Viewer) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 40.dp, vertical = 24.dp)) {
+        Text(state.name, color = ACCENT, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+        Text("Back to close", color = MUTED, fontSize = 12.sp)
+        Spacer(Modifier.height(12.dp))
+        when {
+            state.loading -> CircularProgressIndicator(color = ACCENT)
+            state.error != null -> Text("Error: ${state.error}", color = ERR, fontSize = 15.sp)
+            state.kind == ViewerKind.TEXT -> {
+                Text(
+                    state.text ?: "",
+                    color = TEXT, fontSize = 14.sp, fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                )
+            }
+            state.kind == ViewerKind.IMAGE && state.imageUrl != null -> {
+                RemoteImage(state.imageUrl)
+            }
+        }
+    }
+}
+
+/** Decode a remote image off the main thread (no image library, works on API 21+). */
+@Composable
+private fun RemoteImage(url: String) {
+    var bmp by remember(url) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var failed by remember(url) { mutableStateOf(false) }
+    LaunchedEffect(url) {
+        val result = withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+                    connectTimeout = 5000; readTimeout = 10000
+                }
+                try { conn.inputStream.use { android.graphics.BitmapFactory.decodeStream(it) } }
+                finally { conn.disconnect() }
+            }.getOrNull()
+        }
+        if (result != null) bmp = result else failed = true
+    }
+    when {
+        bmp != null -> Image(
+            bitmap = bmp!!.asImageBitmap(),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Fit
+        )
+        failed -> Text("Could not load image", color = ERR, fontSize = 15.sp)
+        else -> CircularProgressIndicator(color = ACCENT)
     }
 }
 

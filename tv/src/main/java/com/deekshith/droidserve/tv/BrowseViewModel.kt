@@ -17,6 +17,8 @@ import kotlinx.coroutines.withContext
 
 enum class SortMode { DEFAULT, NAME, SIZE }
 
+enum class ViewerKind { TEXT, IMAGE }
+
 /** A media stream to hand to the OS default player (VLC/MX/etc) via ACTION_VIEW. */
 data class OpenRequest(val url: String, val mime: String, val subUrl: String? = null)
 
@@ -57,6 +59,22 @@ sealed interface UiScreen {
         val error: String? = null,
         val casting: OpenRequest? = null   // transient toast when a phone casts to us
     ) : UiScreen
+
+    /**
+     * In-app viewer for text and images. Rendering these in-app (instead of firing an external
+     * ACTION_VIEW) means a TV with no text/image app — or a buggy one — never breaks the flow,
+     * and there's no jarring app switch on a 10-foot UI. Only video/audio delegate to a native
+     * player, where hardware decoding actually matters.
+     */
+    data class Viewer(
+        val server: DiscoveredServer,
+        val name: String,
+        val kind: ViewerKind,
+        val imageUrl: String? = null,      // for images
+        val text: String? = null,          // for text (loaded)
+        val loading: Boolean = false,
+        val error: String? = null
+    ) : UiScreen
 }
 
 class BrowseViewModel(app: Application) : AndroidViewModel(app) {
@@ -74,6 +92,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     private var client: DroidServeClient? = null
     private var rawEntries: List<RemoteEntry> = emptyList()
+    private var currentPath: String = ""     // last opened folder, so the viewer can return to it
     private var pollJob: Job? = null
     private var connectedBase: String? = null
     private var connectedCreds: Pair<String, String?>? = null
@@ -233,6 +252,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                     c.listDir(path)
                 }
                 rawEntries = listing.entries
+                currentPath = path
                 _screen.value = render(server, path, "", SortMode.DEFAULT)
             } catch (e: AuthException) {
                 // Credentials went stale (server restarted with a new token) — re-prompt.
@@ -272,15 +292,42 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    /** Click a row: folders navigate; files open in the OS default app (native player/viewer). */
+    /**
+     * Click a row: folders navigate; text & images open in the IN-APP viewer (robust, no app
+     * switch, works even if the TV has no/only-broken text/image apps); video & audio delegate
+     * to the device's native player (where hardware decoding matters).
+     */
     fun onEntryClick(entry: RemoteEntry) {
         val cur = _screen.value as? UiScreen.Browse ?: return
-        if (entry.isDir) {
-            val childPath = if (cur.path.isEmpty()) entry.name else "${cur.path}/${entry.name}"
-            openFolder(cur.server, childPath)
-        } else {
-            // Delegate to the device's own capable player/viewer — no built-in player.
-            _open.tryEmit(OpenRequest(entry.url, entry.mime, entry.subUrl))
+        when {
+            entry.isDir -> {
+                val childPath = if (cur.path.isEmpty()) entry.name else "${cur.path}/${entry.name}"
+                openFolder(cur.server, childPath)
+            }
+            entry.isImage -> {
+                _screen.value = UiScreen.Viewer(cur.server, entry.name, ViewerKind.IMAGE, imageUrl = entry.url)
+            }
+            entry.isText -> {
+                _screen.value = UiScreen.Viewer(cur.server, entry.name, ViewerKind.TEXT, loading = true)
+                viewModelScope.launch {
+                    try {
+                        val body = withContext(Dispatchers.IO) {
+                            (client ?: DroidServeClient(cur.server.baseUrl)).fetchText(entry.url)
+                        }
+                        (_screen.value as? UiScreen.Viewer)?.let {
+                            if (it.name == entry.name) _screen.value = it.copy(text = body, loading = false)
+                        }
+                    } catch (e: Exception) {
+                        (_screen.value as? UiScreen.Viewer)?.let {
+                            if (it.name == entry.name) _screen.value = it.copy(error = e.message ?: "Failed to load", loading = false)
+                        }
+                    }
+                }
+            }
+            else -> {
+                // Playable media (or anything else) → native player via ACTION_VIEW.
+                _open.tryEmit(OpenRequest(entry.url, entry.mime, entry.subUrl))
+            }
         }
     }
 
@@ -318,6 +365,11 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     fun onBack(): Boolean {
         when (val cur = _screen.value) {
             is UiScreen.Auth -> { _screen.value = backToDiscovery(); return true }
+            is UiScreen.Viewer -> {
+                // Return to the folder listing we came from, from cache (no refetch).
+                _screen.value = render(cur.server, currentPath, "", SortMode.DEFAULT)
+                return true
+            }
             is UiScreen.Browse -> {
                 if (cur.path.isEmpty()) {
                     pollJob?.cancel()

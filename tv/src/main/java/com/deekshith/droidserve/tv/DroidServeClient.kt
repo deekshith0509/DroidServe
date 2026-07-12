@@ -99,6 +99,34 @@ class DroidServeClient(
         }
     }
 
+    /**
+     * Fetch a text file's contents for the in-app viewer. [absoluteUrl] is the full, already
+     * token-carrying URL from a RemoteEntry. Bounded to [maxBytes] so a huge/mis-typed file can't
+     * exhaust memory on a low-RAM TV. Runs off the main thread.
+     */
+    fun fetchText(absoluteUrl: String, maxBytes: Int = 1_000_000): String {
+        val conn = open(absoluteUrl)
+        try {
+            val code = conn.responseCode
+            if (code == 401) throw AuthException()
+            if (code !in 200..299) throw RuntimeException("HTTP $code")
+            val buf = ByteArray(maxBytes)
+            var total = 0
+            conn.inputStream.use { input ->
+                while (total < maxBytes) {
+                    val n = input.read(buf, total, maxBytes - total)
+                    if (n < 0) break
+                    total += n
+                }
+            }
+            val truncated = total >= maxBytes
+            val body = String(buf, 0, total, Charsets.UTF_8)
+            return if (truncated) "$body\n\n… (truncated)" else body
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     private fun open(url: String): HttpURLConnection =
         (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 5000
