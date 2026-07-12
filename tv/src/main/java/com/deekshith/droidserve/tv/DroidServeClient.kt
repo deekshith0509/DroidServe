@@ -55,7 +55,8 @@ class DroidServeClient(
                     size = e.optLong("size"),
                     modified = e.optLong("modified"),
                     mime = e.optString("mime"),
-                    url = baseUrl + e.optString("url")
+                    url = baseUrl + e.optString("url"),
+                    subUrl = e.optString("subUrl", "").takeIf { it.isNotEmpty() }?.let { baseUrl + it }
                 )
             )
         }
@@ -79,7 +80,8 @@ class DroidServeClient(
             return CastCommand(
                 action = o.optString("action", "play"),
                 url = o.optString("url"),
-                mime = o.optString("mime")
+                mime = o.optString("mime"),
+                subUrl = o.optString("subUrl", "").takeIf { it.isNotEmpty() }
             )
         } finally { conn.disconnect() }
     }

@@ -96,7 +96,7 @@ class ClientIntegrationTest {
             "/api/info" -> writeJson(c, ApiFmt.info("Pixel", socket.localPort, requireAuth, tokQ))
             "/api/list" -> writeJson(c, ApiFmt.list("", listOf(
                 ApiFmt.Row("Movies", true, 0, "inode/directory"),
-                ApiFmt.Row("clip.mp4", false, videoBytes.size.toLong(), "video/mp4"),
+                ApiFmt.Row("clip.mp4", false, videoBytes.size.toLong(), "video/mp4", subUrl = "/clip.en.srt?vtt=1"),
                 ApiFmt.Row("notes.txt", false, textBody.length.toLong(), "text/plain")
             ), tokQ))
             "/api/list/Movies" -> writeJson(c, ApiFmt.list("Movies", listOf(
@@ -169,6 +169,19 @@ class ClientIntegrationTest {
     @Test fun list_nested_encodesSpaces() {
         assertEquals("${base()}/Movies/a%20b.mp4",
             DroidServeClient(base()).listDir("Movies").entries[0].url)
+    }
+
+    @Test fun list_videoCarriesSubtitleUrl() {
+        val video = DroidServeClient(base()).listDir("").entries.first { it.name == "clip.mp4" }
+        assertEquals("${base()}/clip.en.srt?vtt=1", video.subUrl)
+        // Non-video rows have no subtitle.
+        assertEquals(null, DroidServeClient(base()).listDir("").entries.first { it.name == "notes.txt" }.subUrl)
+    }
+
+    @Test fun poll_castCommandCarriesSubtitle() {
+        pendingCast = ApiFmt.cast("play", "${base()}/clip.mp4", "video/mp4", subUrl = "${base()}/clip.en.srt?vtt=1")
+        val cmd = DroidServeClient(base()).pollCast()
+        assertEquals("${base()}/clip.en.srt?vtt=1", cmd?.subUrl)
     }
 
     @Test fun list_folderWithSpecialCharsIsPercentEncoded() {
@@ -245,7 +258,7 @@ class ClientIntegrationTest {
 
 /** Minimal replica of the phone's ApiJson wire format (app's ApiJsonTest pins the real one). */
 private object ApiFmt {
-    data class Row(val name: String, val isDir: Boolean, val size: Long, val mime: String)
+    data class Row(val name: String, val isDir: Boolean, val size: Long, val mime: String, val subUrl: String? = null)
 
     fun info(name: String, port: Int, auth: Boolean, tokQ: String) =
         """{"name":"$name","ip":"127.0.0.1","port":$port,"device":"d","auth":$auth,"tokenQuery":"$tokQ","apiVersion":1}"""
@@ -254,11 +267,13 @@ private object ApiFmt {
         val base = if (path.isEmpty()) "" else "/$path"
         val items = rows.joinToString(",") { r ->
             val url = "$base/${r.name.replace(" ", "%20")}$tokQ"
-            """{"name":"${r.name}","isDir":${r.isDir},"size":${r.size},"modified":0,"mime":"${r.mime}","url":"$url"}"""
+            val sub = if (r.subUrl != null) ""","subUrl":"${r.subUrl}"""" else ""
+            """{"name":"${r.name}","isDir":${r.isDir},"size":${r.size},"modified":0,"mime":"${r.mime}","url":"$url"$sub}"""
         }
         return """{"path":"$path","entries":[$items]}"""
     }
 
-    fun cast(action: String, url: String, mime: String) =
-        """{"action":"$action","url":"$url","mime":"$mime"}"""
+    fun cast(action: String, url: String, mime: String, subUrl: String? = null) =
+        if (subUrl != null) """{"action":"$action","url":"$url","mime":"$mime","subUrl":"$subUrl"}"""
+        else """{"action":"$action","url":"$url","mime":"$mime"}"""
 }
