@@ -70,8 +70,17 @@ class MainActivity : ComponentActivity() {
 
     private val vm: BrowseViewModel by viewModels()
 
+    private companion object { const val REQ_PLAYER = 1001 }
+
+    // The URL of the video we last handed to an external player, so we can attribute the returned
+    // resume position to the right file.
+    private var lastVideoUrl: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Prune the resume-position cache on startup if it grew past 100 KB (bounded cleanup).
+        PlaybackStore.pruneIfLarge(application)
 
         // If we crashed last run, surface the saved stack trace on-screen (we can't always
         // attach adb to a TV). Reading it clears it.
@@ -109,25 +118,38 @@ class MainActivity : ComponentActivity() {
      * Delegate playback/viewing to whatever app the user already has (VLC, MX Player, a photo
      * viewer, etc). This gives us hardware decoding and broad codec support for free, and keeps
      * the TV app tiny. We never bundle a player.
+     *
+     * For video we launch for a result and pass the last resume position; players that support it
+     * (VLC, MX) start there and report the stop position back, which we persist for next time.
      */
     private fun openInDefaultApp(req: OpenRequest) {
         val mime = req.mime.ifBlank { "*/*" }
+        val isVideo = req.mime.startsWith("video/")
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(Uri.parse(req.url), mime)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             // Pass a sidecar subtitle track to players that understand it. VLC and MX Player read
             // these extras; players that don't simply ignore them, so it's always safe to include.
             req.subUrl?.let { s ->
                 val subUri = Uri.parse(s)
-                // VLC for Android
-                putExtra("subtitles_location", s)
-                // MX Player (free + pro)
-                putExtra("subs", arrayOf(subUri))
+                putExtra("subtitles_location", s)                 // VLC for Android
+                putExtra("subs", arrayOf(subUri))                 // MX Player
                 putExtra("subs.name", arrayOf("Subtitles"))
             }
+            // Resume position (ms). VLC uses "position" (long ms) / "from_start"; MX uses
+            // "position" (int ms). Players that don't understand it just start from 0.
+            if (req.resumeMs > 0) {
+                putExtra("position", req.resumeMs.toLong())       // VLC
+                putExtra("return_result", true)                  // MX: ask it to report back
+            } else if (isVideo) {
+                putExtra("return_result", true)
+            }
         }
+        lastVideoUrl = if (isVideo) req.url else null
         try {
-            startActivity(intent)
+            if (isVideo) startActivityForResult(intent, REQ_PLAYER) else {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(intent)
+            }
         } catch (e: Exception) {
             // No app registered for this type — offer a chooser across everything that can VIEW.
             try {
@@ -138,6 +160,25 @@ class MainActivity : ComponentActivity() {
                 Toast.makeText(this, "No app can open this file", Toast.LENGTH_LONG).show()
             }
         }
+    }
+
+    // Capture the position an external player reports on exit so we can resume next time. VLC and
+    // MX both return an "extra_position"/"position" (ms) in the result Intent.
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_PLAYER) return
+        val url = lastVideoUrl ?: return
+        val pos = data?.let {
+            when {
+                it.hasExtra("extra_position") -> it.getLongExtra("extra_position", 0).toInt()  // MX
+                it.hasExtra("position") -> it.getLongExtra("position", 0).toInt()               // VLC
+                else -> -1
+            }
+        } ?: -1
+        // Only record when the player actually reported a position (>=0). A player that ignores
+        // the result contract leaves the previous mark untouched.
+        if (pos >= 0) vm.recordPlaybackPosition(url, pos)
     }
 
     @Deprecated("Deprecated in Java")
