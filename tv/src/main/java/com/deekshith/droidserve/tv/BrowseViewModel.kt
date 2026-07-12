@@ -29,8 +29,19 @@ sealed interface UiScreen {
         val scanning: Boolean = false
     ) : UiScreen
 
-    /** Password prompt for a protected server. */
-    data class Auth(val server: DiscoveredServer, val error: String? = null) : UiScreen
+    /**
+     * Password prompt for a protected server.
+     * @param savedUsername/savedPassword non-null when we remember a prior successful login for
+     *   this server, so the UI can offer "Use saved password" instead of forcing a re-type.
+     */
+    data class Auth(
+        val server: DiscoveredServer,
+        val error: String? = null,
+        val savedUsername: String? = null,
+        val savedPassword: String? = null
+    ) : UiScreen {
+        val hasSaved: Boolean get() = savedPassword != null
+    }
 
     data class Browse(
         val server: DiscoveredServer,
@@ -52,6 +63,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     private val discovery = ServerDiscovery(app)
     private val scanner = SubnetScanner(app)
+    private val creds = CredentialStore(app)
 
     private val _screen = MutableStateFlow<UiScreen>(UiScreen.Discovery())
     val screen: StateFlow<UiScreen> = _screen.asStateFlow()
@@ -121,7 +133,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 val probe = DroidServeClient(server.baseUrl)
                 val info = withContext(Dispatchers.IO) { probe.fetchInfo() }
                 if (info.auth) {
-                    _screen.value = UiScreen.Auth(server)
+                    promptOrUseSaved(server)
                 } else {
                     client = probe
                     connectedBase = server.baseUrl
@@ -131,9 +143,10 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } catch (e: AuthException) {
                 // A properly-secured server requires credentials even for /api/info, so the
-                // probe itself 401s. That is NOT an error — it means "log in", so route to the
-                // password prompt instead of showing an "unreachable" message.
-                _screen.value = UiScreen.Auth(server)
+                // probe itself 401s. That is NOT an error — it means "log in". If we already
+                // remember a working password for this server, try it automatically; otherwise
+                // show the prompt (pre-filled with any saved value).
+                promptOrUseSaved(server)
             } catch (e: Exception) {
                 _screen.value = UiScreen.Discovery(
                     servers = (_screen.value as? UiScreen.Discovery)?.servers ?: emptyList(),
@@ -143,10 +156,33 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // Decide what to show for a protected server: silently reuse a remembered password when we
+    // have one (so a returning user isn't asked again), else present the password prompt.
+    private fun promptOrUseSaved(server: DiscoveredServer) {
+        val saved = creds.get(server.host, server.port)
+        if (saved != null) {
+            // Try the saved password automatically first.
+            attemptAuth(server, saved.username, saved.password, remember = true, fromSaved = true)
+        } else {
+            _screen.value = UiScreen.Auth(server)
+        }
+    }
+
     fun connectManual(host: String, port: Int) =
         connect(DiscoveredServer("$host:$port", host, port))
 
-    fun submitAuth(server: DiscoveredServer, username: String, password: String) {
+    /** Called from the Auth screen's Connect button. [remember] persists creds on success. */
+    fun submitAuth(server: DiscoveredServer, username: String, password: String, remember: Boolean = true) =
+        attemptAuth(server, username, password, remember, fromSaved = false)
+
+    // Shared auth attempt used by both a fresh login and an automatic saved-password retry.
+    // On success: opens the server (and optionally remembers the credentials). On failure:
+    // shows the password prompt. When a *saved* password fails (server password changed), the
+    // stale entry is forgotten and the prompt explains why.
+    private fun attemptAuth(
+        server: DiscoveredServer, username: String, password: String,
+        remember: Boolean, fromSaved: Boolean
+    ) {
         viewModelScope.launch {
             try {
                 val c = DroidServeClient(server.baseUrl, username, password)
@@ -154,14 +190,32 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 client = c
                 connectedBase = server.baseUrl
                 connectedCreds = username to password
+                if (remember) creds.save(server.host, server.port, username, password)
                 startPollLoop()
                 openFolder(server, "")
             } catch (e: AuthException) {
-                _screen.value = UiScreen.Auth(server, error = "Wrong password, try again")
+                if (fromSaved) {
+                    // The remembered password no longer works (server password changed). Drop it
+                    // and ask the user for the new one, pre-filling the old username.
+                    creds.forget(server.host, server.port)
+                    _screen.value = UiScreen.Auth(server,
+                        error = "Saved password no longer works — enter the new one",
+                        savedUsername = username)
+                } else {
+                    _screen.value = UiScreen.Auth(server, error = "Wrong password, try again",
+                        savedUsername = username)
+                }
             } catch (e: Exception) {
-                _screen.value = UiScreen.Auth(server, error = e.message ?: "Failed")
+                _screen.value = UiScreen.Auth(server, error = e.message ?: "Failed",
+                    savedUsername = username)
             }
         }
+    }
+
+    /** Forget the saved password for a server (offered from the Auth screen). */
+    fun forgetSaved(server: DiscoveredServer) {
+        creds.forget(server.host, server.port)
+        _screen.value = UiScreen.Auth(server)
     }
 
     fun openFolder(server: DiscoveredServer, path: String) {
