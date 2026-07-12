@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit
 object CastQueue {
 
     /** One instruction pushed from a controller (phone) to a player (TV). */
-    data class Command(val action: String, val url: String, val mime: String)
+    data class Command(val action: String, val url: String, val mime: String, val subUrl: String? = null)
 
     // A short queue: casts are rare, human-paced events. Bounded so a disconnected TV can't
     // let commands pile up unboundedly; oldest is dropped on overflow.
@@ -26,8 +26,8 @@ object CastQueue {
     private val queue = LinkedBlockingQueue<Command>(CAPACITY)
 
     /** Enqueue a command from the controller. Non-blocking; drops the oldest on overflow. */
-    fun cast(url: String, mime: String, action: String = "play") {
-        val cmd = Command(action, url, mime)
+    fun cast(url: String, mime: String, action: String = "play", subUrl: String? = null) {
+        val cmd = Command(action, url, mime, subUrl)
         if (!queue.offer(cmd)) {
             queue.poll()          // make room by discarding the stalest command
             queue.offer(cmd)

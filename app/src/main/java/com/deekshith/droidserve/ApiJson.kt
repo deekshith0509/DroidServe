@@ -15,7 +15,9 @@ object ApiJson {
         val isDir: Boolean,
         val size: Long,
         val modified: Long,
-        val mime: String
+        val mime: String,
+        /** Absolute-from-root subtitle URL (WebVTT via ?vtt=1) for a video, or null. */
+        val subUrl: String? = null
     )
 
     fun escape(s: String): String {
@@ -70,6 +72,7 @@ object ApiJson {
                 append("\"modified\":").append(e.modified).append(',')
                 append("\"mime\":\"").append(escape(e.mime)).append("\",")
                 append("\"url\":\"").append(escape(href + tokQ)).append('"')
+                if (e.subUrl != null) append(",\"subUrl\":\"").append(escape(e.subUrl)).append('"')
                 append('}')
             }
             append("]}")
@@ -77,11 +80,12 @@ object ApiJson {
     }
 
     /** Serialize a cast command for the TV long-poll response. */
-    fun castCommand(action: String, url: String, mime: String): String = buildString {
+    fun castCommand(action: String, url: String, mime: String, subUrl: String? = null): String = buildString {
         append('{')
         append("\"action\":\"").append(escape(action)).append("\",")
         append("\"url\":\"").append(escape(url)).append("\",")
         append("\"mime\":\"").append(escape(mime)).append('"')
+        if (subUrl != null) append(",\"subUrl\":\"").append(escape(subUrl)).append('"')
         append('}')
     }
 }

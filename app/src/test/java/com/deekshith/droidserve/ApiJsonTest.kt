@@ -91,6 +91,25 @@ class ApiJsonTest {
         assertEquals(0, o.getJSONArray("entries").length())
     }
 
+    @Test fun list_videoRowIncludesSubUrlWhenPresent() {
+        val rows = listOf(
+            ApiJson.Row("movie.mp4", isDir = false, size = 1, modified = 0, mime = "video/mp4",
+                subUrl = "/movie.en.srt?vtt=1"),
+            ApiJson.Row("plain.mp4", isDir = false, size = 1, modified = 0, mime = "video/mp4")
+        )
+        val arr = JSONObject(ApiJson.list("", rows, "")).getJSONArray("entries")
+        assertEquals("/movie.en.srt?vtt=1", arr.getJSONObject(0).getString("subUrl"))
+        // Null subUrl must be omitted entirely (not serialized as "null").
+        assertFalse(arr.getJSONObject(1).has("subUrl"))
+    }
+
+    @Test fun castCommand_includesSubUrlWhenPresent() {
+        val withSub = JSONObject(ApiJson.castCommand("play", "http://h/v.mp4", "video/mp4", "http://h/v.srt?vtt=1"))
+        assertEquals("http://h/v.srt?vtt=1", withSub.getString("subUrl"))
+        val without = JSONObject(ApiJson.castCommand("play", "http://h/v.mp4", "video/mp4"))
+        assertFalse(without.has("subUrl"))
+    }
+
     @Test fun escape_controlCharsBecomeUnicodeEscapes() {
         assertEquals("\\u0000", ApiJson.escape("\u0000"))
         assertEquals("a\\nb", ApiJson.escape("a\nb"))

@@ -91,7 +91,7 @@ class MainActivity : ComponentActivity() {
                     when (val s = screen) {
                         is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual, vm::rescan)
                         is UiScreen.Auth -> AuthScreen(s, vm::submitAuth)
-                        is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort)
+                        is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort, vm::clearCastToast)
                     }
                 }
             }
@@ -108,6 +108,16 @@ class MainActivity : ComponentActivity() {
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(Uri.parse(req.url), mime)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            // Pass a sidecar subtitle track to players that understand it. VLC and MX Player read
+            // these extras; players that don't simply ignore them, so it's always safe to include.
+            req.subUrl?.let { s ->
+                val subUri = Uri.parse(s)
+                // VLC for Android
+                putExtra("subtitles_location", s)
+                // MX Player (free + pro)
+                putExtra("subs", arrayOf(subUri))
+                putExtra("subs.name", arrayOf("Subtitles"))
+            }
         }
         try {
             startActivity(intent)
@@ -267,7 +277,8 @@ private fun BrowseScreen(
     state: UiScreen.Browse,
     onClick: (RemoteEntry) -> Unit,
     onFilter: (String) -> Unit,
-    onSort: (SortMode) -> Unit
+    onSort: (SortMode) -> Unit,
+    onClearCast: () -> Unit
 ) {
     val firstItemFocus = remember { FocusRequester() }
     // Search is opt-in: on a 10-foot D-pad UI an always-on text field would grab initial
@@ -301,6 +312,8 @@ private fun BrowseScreen(
         state.casting?.let {
             Spacer(Modifier.height(6.dp))
             Text("📲 Casting from phone → opening in your player…", color = ACCENT, fontSize = 13.sp)
+            // Auto-dismiss the toast a few seconds after it appears so it doesn't linger.
+            LaunchedEffect(it) { kotlinx.coroutines.delay(4000); onClearCast() }
         }
         Spacer(Modifier.height(10.dp))
 
@@ -459,7 +472,16 @@ private fun iconFor(e: RemoteEntry): String = when {
     e.isDir -> "📁"; e.isVideo -> "🎬"; e.isAudio -> "🎵"; e.isImage -> "🖼️"; e.isText -> "📝"; else -> "📄"
 }
 
-private fun metaFor(e: RemoteEntry): String = if (e.isDir) "Folder" else formatSize(e.size)
+private fun metaFor(e: RemoteEntry): String {
+    if (e.isDir) return "Folder"
+    val date = formatDate(e.modified)
+    val base = if (date.isEmpty()) formatSize(e.size) else "${formatSize(e.size)} · $date"
+    // Surface that a subtitle track will be offered to the external player.
+    return if (e.subUrl != null) "$base · CC" else base
+}
+
+private val TV_DATE_FMT = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+private fun formatDate(ms: Long): String = if (ms <= 0L) "" else TV_DATE_FMT.format(java.util.Date(ms))
 
 private fun formatSize(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"

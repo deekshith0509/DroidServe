@@ -26,7 +26,9 @@ data class RemoteEntry(
     val modified: Long,
     val mime: String,
     /** Absolute-from-root href (already token-suffixed) for fetching this resource. */
-    val url: String
+    val url: String,
+    /** Absolute subtitle URL (WebVTT) for a video, or null. Handed to the external player. */
+    val subUrl: String? = null
 ) {
     val isVideo: Boolean get() = mime.startsWith("video/")
     val isAudio: Boolean get() = mime.startsWith("audio/")
@@ -45,5 +47,6 @@ data class Listing(
 data class CastCommand(
     val action: String,
     val url: String,
-    val mime: String
+    val mime: String,
+    val subUrl: String? = null
 )

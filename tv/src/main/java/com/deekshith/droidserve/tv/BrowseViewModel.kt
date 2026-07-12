@@ -18,7 +18,7 @@ import kotlinx.coroutines.withContext
 enum class SortMode { DEFAULT, NAME, SIZE }
 
 /** A media stream to hand to the OS default player (VLC/MX/etc) via ACTION_VIEW. */
-data class OpenRequest(val url: String, val mime: String)
+data class OpenRequest(val url: String, val mime: String, val subUrl: String? = null)
 
 /** The screen the UI is currently showing. */
 sealed interface UiScreen {
@@ -164,10 +164,20 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val listing = withContext(Dispatchers.IO) {
-                    (client ?: DroidServeClient(server.baseUrl).also { client = it }).listDir(path)
+                    // Reuse the authenticated client from connect()/submitAuth(). The fallback
+                    // rebuilds it from the stored creds (not a bare, credential-less client) so a
+                    // protected server never 401s just because `client` was lost.
+                    val c = client ?: run {
+                        val (u, p) = connectedCreds ?: ("" to null)
+                        DroidServeClient(connectedBase ?: server.baseUrl, u, p).also { client = it }
+                    }
+                    c.listDir(path)
                 }
                 rawEntries = listing.entries
                 _screen.value = render(server, path, "", SortMode.DEFAULT)
+            } catch (e: AuthException) {
+                // Credentials went stale (server restarted with a new token) — re-prompt.
+                _screen.value = UiScreen.Auth(server, error = "Session expired, sign in again")
             } catch (e: Exception) {
                 _screen.value = UiScreen.Browse(server, path, emptyList(), 0, 0, 0, 0,
                     error = e.message ?: "Failed to load")
@@ -211,7 +221,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
             openFolder(cur.server, childPath)
         } else {
             // Delegate to the device's own capable player/viewer — no built-in player.
-            _open.tryEmit(OpenRequest(entry.url, entry.mime))
+            _open.tryEmit(OpenRequest(entry.url, entry.mime, entry.subUrl))
         }
     }
 
@@ -226,9 +236,10 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 try {
                     val cmd = withContext(Dispatchers.IO) { poller.pollCast() }
                     if (cmd != null) {
-                        _open.tryEmit(OpenRequest(cmd.url, cmd.mime))
+                        val req = OpenRequest(cmd.url, cmd.mime, cmd.subUrl)
+                        _open.tryEmit(req)
                         (_screen.value as? UiScreen.Browse)?.let {
-                            _screen.value = it.copy(casting = OpenRequest(cmd.url, cmd.mime))
+                            _screen.value = it.copy(casting = req)
                         }
                     }
                 } catch (e: Exception) {
@@ -247,11 +258,11 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onBack(): Boolean {
         when (val cur = _screen.value) {
-            is UiScreen.Auth -> { _screen.value = UiScreen.Discovery(); return true }
+            is UiScreen.Auth -> { _screen.value = backToDiscovery(); return true }
             is UiScreen.Browse -> {
                 if (cur.path.isEmpty()) {
                     pollJob?.cancel()
-                    _screen.value = UiScreen.Discovery()
+                    _screen.value = backToDiscovery()
                     return true
                 }
                 openFolder(cur.server, cur.path.substringBeforeLast('/', ""))
@@ -260,6 +271,10 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
             is UiScreen.Discovery -> return false
         }
     }
+
+    // Returning to the picker must show the servers we already know about, not an empty list
+    // (mDNS won't necessarily re-announce immediately, and we don't auto-rescan on every back).
+    private fun backToDiscovery() = UiScreen.Discovery(servers = discovered.values.toList())
 
     override fun onCleared() {
         pollJob?.cancel()

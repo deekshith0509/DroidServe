@@ -288,7 +288,10 @@ class HttpServer(
             val href = "/" + rel.split('/').filter { it.isNotEmpty() }
                 .joinToString("/") { FileUtils.encodeSeg(it) }
             val absUrl = "http://${ServerStateHolder.ip.value}:${ServerStateHolder.port.value}$href$tokQ"
-            CastQueue.cast(absUrl, FileUtils.getMimeType(entry.name))
+            val mime = FileUtils.getMimeType(entry.name)
+            // If casting a video, find a sidecar subtitle so the TV's external player shows it too.
+            val subUrl = if (mime.startsWith("video/")) siblingSubtitleUrl(rel, tokQ) else null
+            CastQueue.cast(absUrl, mime, subUrl = subUrl)
             return jsonResponse("""{"ok":true}""").also {
                 if (needsCookie) it.addHeader(
                     "Set-Cookie", "$COOKIE_NAME=$sessionToken; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
@@ -301,7 +304,7 @@ class HttpServer(
             return if (cmd == null) {
                 newFixedLengthResponse(Response.Status.NO_CONTENT, "application/json", "").also { cors(it) }
             } else {
-                jsonResponse(ApiJson.castCommand(cmd.action, cmd.url, cmd.mime))
+                jsonResponse(ApiJson.castCommand(cmd.action, cmd.url, cmd.mime, cmd.subUrl))
             }
         }
 
@@ -432,6 +435,29 @@ class HttpServer(
         return currentEntry
     }
 
+    // Find a sidecar subtitle (.srt/.vtt) sharing the video's stem in the same folder and return
+    // its absolute, WebVTT (?vtt=1) URL — or null. Used for the phone->TV cast path.
+    private fun siblingSubtitleUrl(videoRel: String, tokQ: String): String? {
+        val segs = videoRel.split('/').filter { it.isNotEmpty() }
+        if (segs.isEmpty()) return null
+        val fileName = segs.last()
+        val stem = (if (fileName.contains('.')) fileName.substring(0, fileName.lastIndexOf('.')) else fileName).lowercase()
+        val parentRel = segs.dropLast(1)
+        val parentDocId = if (parentRel.isEmpty()) rootDocId
+                          else (resolveFast(parentRel.joinToString("/"))?.takeIf { it.isDirectory }?.docId ?: return null)
+        val sub = listFast(parentDocId).firstOrNull { e ->
+            if (e.isDirectory) return@firstOrNull false
+            val l = e.name.lowercase()
+            if (!l.endsWith(".srt") && !l.endsWith(".vtt")) return@firstOrNull false
+            val noExt = e.name.substring(0, e.name.lastIndexOf('.'))
+            val subStem = (if (noExt.contains('.')) noExt.substringBeforeLast('.') else noExt).lowercase()
+            subStem == stem
+        } ?: return null
+        val subHref = "/" + (parentRel + sub.name).joinToString("/") { FileUtils.encodeSeg(it) }
+        val q = "?vtt=1" + if (tokQ.isEmpty()) "" else "&${tokQ.removePrefix("?")}"
+        return "http://${ServerStateHolder.ip.value}:${ServerStateHolder.port.value}$subHref$q"
+    }
+
     // -----------------------------------------------------------------------
     // Response builders
     // -----------------------------------------------------------------------
@@ -474,13 +500,35 @@ class HttpServer(
         ))
 
     private fun apiListResponse(entries: List<FileEntry>, urlPath: String, tokQ: String): Response {
+        // Index sidecar subtitles by media stem (same convention as the web UI) so native
+        // clients (the TV app) can hand a subtitle track to the external player.
+        val base = if (urlPath.isEmpty()) "" else "/" + urlPath.split('/')
+            .filter { it.isNotEmpty() }.joinToString("/") { FileUtils.encodeSeg(it) }
+        val subByStem = HashMap<String, String>()
+        for (e in entries) {
+            if (e.isDirectory) continue
+            val lower = e.name.lowercase()
+            if (!lower.endsWith(".srt") && !lower.endsWith(".vtt")) continue
+            val noExt = e.name.substring(0, e.name.lastIndexOf('.'))
+            val stem  = (if (noExt.contains('.')) noExt.substringBeforeLast('.') else noExt).lowercase()
+            // First subtitle wins; keep it stable.
+            if (!subByStem.containsKey(stem)) {
+                subByStem[stem] = "$base/${FileUtils.encodeSeg(e.name)}?vtt=1" + if (tokQ.isEmpty()) "" else "&${tokQ.removePrefix("?")}"
+            }
+        }
         val rows = entries.map {
+            val mime = if (it.isDirectory) "inode/directory" else FileUtils.getMimeType(it.name)
+            val sub = if (!it.isDirectory && mime.startsWith("video/")) {
+                val stem = (if (it.name.contains('.')) it.name.substring(0, it.name.lastIndexOf('.')) else it.name).lowercase()
+                subByStem[stem]
+            } else null
             ApiJson.Row(
                 name = it.name,
                 isDir = it.isDirectory,
                 size = it.size,
                 modified = it.lastModified,
-                mime = if (it.isDirectory) "inode/directory" else FileUtils.getMimeType(it.name)
+                mime = mime,
+                subUrl = sub
             )
         }
         return jsonResponse(ApiJson.list(urlPath, rows, tokQ))
