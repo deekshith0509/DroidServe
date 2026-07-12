@@ -84,11 +84,21 @@ class SubnetScanner(context: Context) {
             setRequestProperty("Accept", "application/json")
         }
         try {
-            if (conn.responseCode != 200) null
-            else {
-                val o = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
-                if (!o.has("apiVersion")) null
-                else DiscoveredServer(o.optString("name", "DroidServe"), ip, port)
+            when (conn.responseCode) {
+                200 -> {
+                    val o = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                    if (!o.has("apiVersion")) null
+                    else DiscoveredServer(o.optString("name", "DroidServe"), ip, port)
+                }
+                // A password-protected DroidServe returns 401 with this realm even on /api/info.
+                // Recognise it so protected servers still appear on networks that block mDNS
+                // (otherwise they'd be invisible via the subnet fallback). The TV then prompts.
+                401 -> {
+                    val realm = conn.getHeaderField("WWW-Authenticate") ?: ""
+                    if (realm.contains("DroidServe", ignoreCase = true))
+                        DiscoveredServer("DroidServe (locked)", ip, port) else null
+                }
+                else -> null
             }
         } finally { conn.disconnect() }
     } catch (_: Exception) { null }
