@@ -39,7 +39,10 @@ class DroidServeClient(
 
     /** [path] is the server-relative folder path, empty for root. */
     fun listDir(path: String): Listing {
-        val suffix = if (path.isEmpty()) "/api/list" else "/api/list/$path"
+        // Percent-encode each segment: navigation builds paths from raw (decoded) folder names,
+        // so a folder like "My Vids" or "a&b" would otherwise produce an invalid/misrouted URL.
+        val encoded = path.split('/').filter { it.isNotEmpty() }.joinToString("/") { encodeSeg(it) }
+        val suffix = if (encoded.isEmpty()) "/api/list" else "/api/list/$encoded"
         val o = getJson(baseUrl + suffix)
         val arr = o.optJSONArray("entries")
         val list = ArrayList<RemoteEntry>(arr?.length() ?: 0)
@@ -105,6 +108,22 @@ class DroidServeClient(
 
 /** Thrown when the server rejects credentials (HTTP 401). */
 class AuthException : RuntimeException("Authentication required")
+
+// RFC 3986 percent-encoding of a single path segment. Self-contained (no android.net.Uri) so it
+// behaves identically on the JVM unit-test classpath and matches the phone's FileUtils.encodeSeg.
+private val HEXCHARS = "0123456789ABCDEF".toCharArray()
+internal fun encodeSeg(s: String): String {
+    val bytes = s.toByteArray(Charsets.UTF_8)
+    val out = StringBuilder(bytes.size + 8)
+    for (b in bytes) {
+        val c = b.toInt() and 0xFF
+        val unreserved = c in 0x30..0x39 || c in 0x41..0x5A || c in 0x61..0x7A ||
+            c == '-'.code || c == '.'.code || c == '_'.code || c == '~'.code
+        if (unreserved) out.append(c.toChar())
+        else out.append('%').append(HEXCHARS[c shr 4]).append(HEXCHARS[c and 0x0F])
+    }
+    return out.toString()
+}
 
 // Standard Base64 (RFC 4648). Self-contained so it behaves identically on Android and on
 // the JVM unit-test classpath (android.util.Base64 is a no-op stub in local unit tests).

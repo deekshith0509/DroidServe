@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.database.Cursor
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.*
@@ -840,6 +842,11 @@ class ServerForegroundService : Service() {
     private var keepAlive: SilentAudioKeepAlive? = null
     private var nsd: NsdAdvertiser? = null
     private var autoStopJob: Job? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    // Title/port of the currently advertised server, so a network change can re-publish the
+    // notification and re-register mDNS with the new IP without re-reading the whole config.
+    @Volatile private var currentTitle: String = "DroidServe"
+    @Volatile private var currentPort: Int = 8080
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onCreate() { super.onCreate(); createNotificationChannel() }
@@ -916,6 +923,8 @@ class ServerForegroundService : Service() {
 
                 if (cfg.keepAwake) acquireLocks()
                 startInactivityWatchdog(cfg.autoStopMinutes)
+                currentTitle = cfg.options.title
+                currentPort  = cfg.port
                 val ip  = NetworkUtils.getLocalIpAddress()
                 val url = "http://$ip:${cfg.port}"
                 ServerStateHolder.onStarted(ip, cfg.port)
@@ -929,6 +938,11 @@ class ServerForegroundService : Service() {
                     }
                 } catch (_: Exception) {}
 
+                // Watch for connectivity changes (Wi-Fi <-> mobile data, AP toggles) so the
+                // shown IP/URL, QR, notification and mDNS advert follow the reachable address
+                // instead of freezing at whatever it was when the server first started.
+                registerNetworkCallback()
+
                 withContext(Dispatchers.Main) {
                     (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
                         .notify(NOTIFICATION_ID, buildNotif("Running — $ip:${cfg.port}", url))
@@ -938,6 +952,61 @@ class ServerForegroundService : Service() {
                 ServerStateHolder.onStopped()
                 stopSelf()
             }
+        }
+    }
+
+    // Follow connectivity changes so the reachable IP the UI/notification/mDNS show never goes
+    // stale after the user switches Wi-Fi <-> mobile data, or the AP subnet changes. The server
+    // socket itself binds to all interfaces, so it keeps serving; only the advertised address
+    // needs refreshing.
+    private fun registerNetworkCallback() {
+        if (networkCallback != null) return
+        val cm = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = onNetworkChanged()
+            override fun onLost(network: Network) = onNetworkChanged()
+            override fun onCapabilitiesChanged(
+                network: Network, caps: android.net.NetworkCapabilities
+            ) = onNetworkChanged()
+        }
+        networkCallback = cb
+        try { cm.registerDefaultNetworkCallback(cb) }
+        catch (e: Exception) { Log.w(TAG, "network callback register failed: ${e.message}"); networkCallback = null }
+    }
+
+    private fun unregisterNetworkCallback() {
+        val cm = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val cb = networkCallback ?: return
+        networkCallback = null
+        try { cm?.unregisterNetworkCallback(cb) } catch (_: Exception) {}
+    }
+
+    // Re-resolve the local IP and re-publish it everywhere the old one was cached: shared state
+    // (UI + web footer), the ongoing notification, and the mDNS advert (so the TV app rediscovers
+    // us at the new address). Debounced implicitly by updateIp's no-op-on-same-value guard.
+    private fun onNetworkChanged() {
+        // Only meaningful while a server is actually running.
+        if (stopped || synchronized(lock) { httpServer } == null) return
+        serviceScope.launch {
+            // Interfaces can take a moment to settle after a transport switch.
+            delay(600)
+            if (stopped || synchronized(lock) { httpServer } == null) return@launch
+            val ip = NetworkUtils.getLocalIpAddress()
+            if (ip == ServerStateHolder.ip.value || ip.isEmpty()) return@launch
+            ServerStateHolder.updateIp(ip)
+            val url = "http://$ip:$currentPort"
+            // Re-register mDNS so discovery reflects the new address (best-effort).
+            try {
+                nsd?.unregister()
+                nsd = NsdAdvertiser(this@ServerForegroundService).also { it.register(currentTitle, currentPort) }
+            } catch (_: Exception) {}
+            withContext(Dispatchers.Main) {
+                try {
+                    (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+                        .notify(NOTIFICATION_ID, buildNotif("Running — $ip:$currentPort", url))
+                } catch (_: Exception) {}
+            }
+            Log.d(TAG, "Network changed — server now reachable at $url")
         }
     }
 
@@ -961,6 +1030,7 @@ class ServerForegroundService : Service() {
     private fun stopAll() {
         stopped = true
         serviceScope.coroutineContext.cancelChildren()
+        unregisterNetworkCallback()
         val srv = synchronized(lock) { val s = httpServer; httpServer = null; s }
         try { srv?.stop() } catch (_: Exception) {}
         releaseLocks()
@@ -972,6 +1042,7 @@ class ServerForegroundService : Service() {
 
     override fun onDestroy() {
         stopped = true
+        unregisterNetworkCallback()
         val srv = synchronized(lock) { val s = httpServer; httpServer = null; s }
         try { srv?.stop() } catch (_: Exception) {}
         releaseLocks()

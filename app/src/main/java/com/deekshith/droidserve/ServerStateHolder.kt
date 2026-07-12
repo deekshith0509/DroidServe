@@ -56,6 +56,13 @@ object ServerStateHolder {
         _isRunning.value = true
     }
 
+    // Update only the reachable IP after a network change (Wi-Fi <-> mobile data, etc.) while
+    // the server keeps running. Counters, uptime and the running flag are untouched. No-op if
+    // the IP is unchanged so the StateFlow doesn't churn.
+    fun updateIp(ip: String) {
+        if (_isRunning.value && ip.isNotEmpty() && _ip.value != ip) _ip.value = ip
+    }
+
     fun incrementRequests(): Int {
         val n = counter.incrementAndGet()
         lastActivityElapsed = SystemClock.elapsedRealtime()

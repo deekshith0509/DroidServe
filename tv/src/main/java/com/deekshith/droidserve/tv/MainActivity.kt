@@ -181,7 +181,7 @@ private fun DiscoveryScreen(
                         }
                     }
                 }
-                items(state.servers.size, key = { state.servers[it].name }) { i ->
+                items(state.servers.size, key = { "${state.servers[it].host}:${state.servers[it].port}" }) { i ->
                     val srv = state.servers[i]
                     val mod = if (i == 0) Modifier.focusRequester(firstServerFocus) else Modifier
                     FocusableRow(onClick = { onConnect(srv) }, extraModifier = mod) {
