@@ -314,6 +314,9 @@ class HttpServer(
         // desktop OS — the only cross-platform way to route a stream to an installed native
         // player from a sandboxed browser (JS cannot enumerate installed apps).
         val isM3u  = params["m3u"]?.firstOrNull() == "1"
+        // ?vtt=1 → serve a subtitle file as WebVTT (converting SubRip on the fly) so the
+        // in-browser <video> can render sidecar .srt/.vtt subtitles regardless of source format.
+        val isVtt  = params["vtt"]?.firstOrNull() == "1"
 
         // Count only authenticated requests that resolve to a real, servable resource
         // (not OPTIONS / 401 / 403 / 404). Incrementing here also keeps the inactivity
@@ -338,6 +341,7 @@ class HttpServer(
                 resolved.isDirectory && isZip                 -> zipResponse(listFast(resolved.docId), resolved.name)
                 resolved.isDirectory                          -> htmlResponse(listFast(resolved.docId), path, resolved.name)
                 isM3u                                         -> m3uResponse(resolved, path)
+                isVtt                                         -> vttResponse(resolved)
                 else                                          -> fileResponse(resolved, session, isDl)
             }
         }
@@ -625,6 +629,36 @@ class HttpServer(
     private fun playlistBaseName(name: String): String {
         val dot = name.lastIndexOf('.')
         return if (dot > 0) name.substring(0, dot) else name
+    }
+
+    // Serve a sidecar subtitle file as WebVTT. SubRip (.srt) is converted on the fly; .vtt is
+    // passed through (still normalised to guarantee a header). Bounded read (2 MB) — real
+    // subtitle files are a few hundred KB at most, and this avoids buffering a huge mis-typed file.
+    private fun vttResponse(entry: FileEntry): Response {
+        val maxBytes = 2 * 1024 * 1024
+        val raw = try {
+            context.contentResolver.openInputStream(entry.uri)?.use { input ->
+                val buf = ByteArrayOutputStream()
+                val chunk = ByteArray(64 * 1024)
+                var total = 0
+                while (true) {
+                    val n = input.read(chunk); if (n < 0) break
+                    total += n
+                    if (total > maxBytes) break
+                    buf.write(chunk, 0, n)
+                }
+                buf.toByteArray()
+            }
+        } catch (_: Exception) { null } ?: return errJson(Response.Status.NOT_FOUND, "Not found")
+
+        // Subtitle files are almost always UTF-8; decode leniently so a stray byte can't abort.
+        val text = String(raw, Charsets.UTF_8)
+        val vtt  = if (entry.name.endsWith(".vtt", ignoreCase = true) && text.trimStart().startsWith("WEBVTT"))
+                       text else FileUtils.srtToVtt(text)
+        return newFixedLengthResponse(Response.Status.OK, "text/vtt; charset=utf-8", vtt).also {
+            it.addHeader("Cache-Control", "no-store")
+            cors(it)
+        }
     }
 
     private fun zipResponse(entries: List<FileEntry>, dirName: String): Response {

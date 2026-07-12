@@ -115,4 +115,45 @@ class LogicTest {
         assertTrue(FileUtils.formatSize(5L * 1024 * 1024).endsWith(" MB"))
         assertTrue(FileUtils.formatSize(3L * 1024 * 1024 * 1024).endsWith(" GB"))
     }
+
+    // ---- FileUtils.srtToVtt (subtitle conversion for the in-browser player) ------------------
+
+    @Test fun srt_addsWebvttHeader() {
+        val vtt = FileUtils.srtToVtt("1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+        assertTrue("must start with WEBVTT", vtt.startsWith("WEBVTT"))
+    }
+
+    @Test fun srt_commaTimestampsBecomeDots() {
+        val vtt = FileUtils.srtToVtt("1\n00:00:01,500 --> 00:00:02,750\nHi\n")
+        assertTrue(vtt.contains("00:00:01.500 --> 00:00:02.750"))
+        assertFalse(vtt.contains(",500"))
+    }
+
+    @Test fun srt_dropsSequenceNumbers() {
+        val vtt = FileUtils.srtToVtt("1\n00:00:01,000 --> 00:00:02,000\nFirst\n\n2\n00:00:03,000 --> 00:00:04,000\nSecond\n")
+        // The bare "1"/"2" index lines must be gone; the cue text stays.
+        assertTrue(vtt.contains("First"))
+        assertTrue(vtt.contains("Second"))
+        val lines = vtt.split("\n").map { it.trim() }
+        assertFalse("sequence index leaked", lines.contains("1"))
+        assertFalse("sequence index leaked", lines.contains("2"))
+    }
+
+    @Test fun srt_padsShortMilliseconds() {
+        val vtt = FileUtils.srtToVtt("1\n00:00:01,5 --> 00:00:02,05\nx\n")
+        assertTrue(vtt.contains("00:00:01.500 --> 00:00:02.050"))
+    }
+
+    @Test fun srt_stripsBomAndHandlesCrlf() {
+        val vtt = FileUtils.srtToVtt("\uFEFF1\r\n00:00:01,000 --> 00:00:02,000\r\nLine\r\n")
+        assertTrue(vtt.startsWith("WEBVTT"))
+        assertFalse(vtt.contains("\uFEFF"))
+        assertTrue(vtt.contains("00:00:01.000 --> 00:00:02.000"))
+    }
+
+    @Test fun srt_alreadyVttTimestampsPreserved() {
+        val vtt = FileUtils.srtToVtt("00:00:01.000 --> 00:00:02.000\nAlready dotted\n")
+        assertTrue(vtt.contains("00:00:01.000 --> 00:00:02.000"))
+        assertTrue(vtt.contains("Already dotted"))
+    }
 }
