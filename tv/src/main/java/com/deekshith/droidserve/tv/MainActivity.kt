@@ -90,7 +90,7 @@ class MainActivity : ComponentActivity() {
                 Box(Modifier.fillMaxSize().background(BG)) {
                     when (val s = screen) {
                         is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual, vm::rescan)
-                        is UiScreen.Auth -> AuthScreen(s, vm::submitAuth)
+                        is UiScreen.Auth -> AuthScreen(s, vm::submitAuth, vm::forgetSaved)
                         is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort, vm::clearCastToast)
                     }
                 }
@@ -253,9 +253,14 @@ private fun ManualConnect(onManual: (String, Int) -> Unit) {
 
 // ── Auth ──────────────────────────────────────────────────────────────────
 @Composable
-private fun AuthScreen(state: UiScreen.Auth, onSubmit: (DiscoveredServer, String, String) -> Unit) {
-    var user by remember { mutableStateOf("") }
-    var pass by remember { mutableStateOf("") }
+private fun AuthScreen(
+    state: UiScreen.Auth,
+    onSubmit: (DiscoveredServer, String, String) -> Unit,
+    onForget: (DiscoveredServer) -> Unit
+) {
+    // Pre-fill the username we remembered for this server, if any.
+    var user by remember(state) { mutableStateOf(state.savedUsername ?: "") }
+    var pass by remember(state) { mutableStateOf("") }
     Column(Modifier.fillMaxSize().padding(48.dp)) {
         Text("🔒 ${state.server.name}", color = ACCENT, fontSize = 26.sp, fontWeight = FontWeight.Bold)
         Text("This server is password protected", color = MUTED, fontSize = 15.sp)
@@ -267,7 +272,16 @@ private fun AuthScreen(state: UiScreen.Auth, onSubmit: (DiscoveredServer, String
         Text("Password", color = MUTED, fontSize = 13.sp)
         InputField(pass, { pass = it }, "password", Modifier.width(320.dp), password = true)
         Spacer(Modifier.height(20.dp))
-        FocusableChip("Connect") { onSubmit(state.server, user, pass) }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FocusableChip("Connect") { onSubmit(state.server, user, pass) }
+            // Only meaningful once something has been remembered for this server.
+            if (state.savedUsername != null) {
+                Spacer(Modifier.width(12.dp))
+                SortChip("Forget saved password", false) { onForget(state.server) }
+            }
+        }
+        Text("Your password is saved for this server and reused next time.",
+            color = MUTED, fontSize = 12.sp, modifier = Modifier.padding(top = 16.dp))
     }
 }
 
