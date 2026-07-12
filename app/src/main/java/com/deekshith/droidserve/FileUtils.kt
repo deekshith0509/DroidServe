@@ -47,6 +47,8 @@ object FileUtils {
         "txt"  to "text/plain",
         "md"   to "text/markdown",
         "csv"  to "text/csv",
+        "vtt"  to "text/vtt",
+        "srt"  to "application/x-subrip",
         "apk"  to "application/vnd.android.package-archive",
         "wasm" to "application/wasm",
         "ttf"  to "font/ttf",
@@ -188,6 +190,22 @@ object FileUtils {
         sb.append("""<div class="list" id="ls">""")
 
         val base = encodePath(urlPath)
+
+        // Index sidecar subtitles (.srt/.vtt) by the media stem they belong to. Convention:
+        // "movie.srt" or "movie.en.srt" both attach to "movie.mp4". Lets the in-browser player
+        // offer subtitle tracks with no extra round-trips (the mapping ships in the page).
+        val subsByStem = HashMap<String, MutableList<Pair<String, String>>>()  // stem -> [(label, srtOrVttName)]
+        for (e in entries) {
+            if (e.isDirectory) continue
+            val lower = e.name.lowercase()
+            if (!lower.endsWith(".srt") && !lower.endsWith(".vtt")) continue
+            val noExt = e.name.substring(0, e.name.lastIndexOf('.'))          // movie.en
+            val stem  = if (noExt.contains('.')) noExt.substringBeforeLast('.') else noExt  // movie
+            val lang  = if (noExt.contains('.')) noExt.substringAfterLast('.') else ""      // en
+            val label = if (lang.isNotEmpty() && lang.length <= 5) lang else "Subtitles"
+            subsByStem.getOrPut(stem.lowercase()) { mutableListOf() }.add(label to e.name)
+        }
+
         for (e in entries) {
             val eName = e.name
             val enc   = encodeSeg(eName)
@@ -213,8 +231,23 @@ object FileUtils {
                 // data-play marks streamable media so the in-browser player overlay intercepts
                 // the click (v=video, a=audio) and can build a next/prev playlist for the folder.
                 val playAttr = when { isVideo -> """ data-play="v"""" ; isAudio -> """ data-play="a"""" ; else -> "" }
+                // Attach any sidecar subtitles for this video as a JSON list the player reads.
+                // Each track URL uses ?vtt=1 so the server hands back browser-ready WebVTT.
+                var subsAttr = ""
+                if (isVideo) {
+                    val stem = if (eName.contains('.')) eName.substring(0, eName.lastIndexOf('.')) else eName
+                    val subs = subsByStem[stem.lowercase()]
+                    if (!subs.isNullOrEmpty()) {
+                        val json = subs.joinToString(",", "[", "]") { (label, subName) ->
+                            val subHref = if (base.isEmpty()) encodeSeg(subName) else "$base/${encodeSeg(subName)}"
+                            val subUrl = "/$subHref?vtt=1$tokAmp"
+                            """{"label":"${jsonStr(label)}","url":"${jsonStr(subUrl)}"}"""
+                        }
+                        subsAttr = """ data-subs="${escHtml(json)}""""
+                    }
+                }
                 // Every file carries its mime so client JS can offer "open with" (Android chooser).
-                sb.append("""<div class="item file" data-name="${escHtml(eName)}" data-size="${e.size}" data-mime="${escHtml(mime)}"$playAttr>""")
+                sb.append("""<div class="item file" data-name="${escHtml(eName)}" data-size="${e.size}" data-mime="${escHtml(mime)}"$playAttr$subsAttr>""")
                 // Tapping the name opens the file directly: the browser plays/shows it inline
                 // where it can; on Android, JS below hands it to the OS "open with" chooser
                 // (VLC/MX for video, etc.). The ⬇ button is the only download action.
@@ -264,6 +297,49 @@ object FileUtils {
     private val DATE_FMT = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
     fun formatDate(ms: Long): String = if (ms <= 0L) "" else DATE_FMT.format(java.util.Date(ms))
 
+    // ----------------------------------------------------------------------
+    // Subtitles — browsers only accept WebVTT for <track>. SubRip (.srt) is by far the most
+    // common sidecar format, so convert it on the fly. Pure/String-in-String-out so it is
+    // unit-testable on the JVM with no Android Context.
+    // ----------------------------------------------------------------------
+    private val SRT_TIME = Regex("""(\d{1,2}:\d{2}:\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2})[,.](\d{1,3})""")
+
+    /**
+     * Convert SubRip (.srt) text to WebVTT (.vtt). Handles the two things that actually break
+     * browser parsing: the "WEBVTT" header must be present, and cue timestamps use '.' (not the
+     * SubRip ','). Sequence-number lines are dropped (optional in VTT). A leading UTF-8 BOM is
+     * stripped. Input that is already VTT is passed through with just a guaranteed header.
+     */
+    fun srtToVtt(srt: String): String {
+        var text = srt
+        if (text.isNotEmpty() && text[0] == '\uFEFF') text = text.substring(1)   // strip BOM
+        // Normalise line endings so cue detection is CRLF/LF agnostic.
+        val lines = text.replace("\r\n", "\n").replace('\r', '\n').split('\n')
+        val out = StringBuilder(text.length + 32)
+        out.append("WEBVTT\n\n")
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i]
+            val m = SRT_TIME.find(line)
+            if (m != null) {
+                // Drop a bare numeric index line immediately preceding the timestamp (already emitted).
+                out.append("${m.groupValues[1]}.${padMs(m.groupValues[2])} --> ${m.groupValues[3]}.${padMs(m.groupValues[4])}\n")
+            } else if (line.trim().all { it.isDigit() } && line.isNotBlank() &&
+                       i + 1 < lines.size && SRT_TIME.containsMatchIn(lines[i + 1])) {
+                // Skip the SubRip sequence number (the next line is its timestamp).
+            } else {
+                out.append(line).append('\n')
+            }
+            i++
+        }
+        return out.toString()
+    }
+
+    // Milliseconds in SubRip may be 1–3 digits; VTT wants exactly 3.
+    private fun padMs(ms: String): String = when (ms.length) {
+        1 -> "${ms}00"; 2 -> "${ms}0"; 3 -> ms; else -> ms.substring(0, 3)
+    }
+
 
     // ----------------------------------------------------------------------
     // Helpers
@@ -312,8 +388,22 @@ object FileUtils {
         return out.toString()
     }
 
-    private val HEX = "0123456789ABCDEF".toCharArray()
+    // Minimal JSON string-body escaper for values embedded in a data-* attribute's JSON.
+    // (The whole attribute is additionally HTML-escaped by escHtml at the call site.)
+    private fun jsonStr(s: String): String {
+        val out = StringBuilder(s.length + 8)
+        for (c in s) when (c) {
+            '"'  -> out.append("\\\"")
+            '\\' -> out.append("\\\\")
+            '\n' -> out.append("\\n")
+            '\r' -> out.append("\\r")
+            '\t' -> out.append("\\t")
+            else -> if (c < ' ') out.append("\\u%04x".format(c.code)) else out.append(c)
+        }
+        return out.toString()
+    }
 
+    private val HEX = "0123456789ABCDEF".toCharArray()
     /**
      * Percent-encode a single path segment per RFC 3986: everything that is not an
      * unreserved character (A–Z a–z 0–9 - . _ ~) is encoded from its UTF-8 bytes.
@@ -564,9 +654,27 @@ fba.innerHTML='<a class="pl-btn" href="'+m3u+'">🎬 Open in default player</a>'
 '<a class="pl-btn alt" href="'+dl+'" download>⬇ Download</a>';
 var el=document.createElement(kind==='a'?'audio':'video');
 el.controls=true;el.autoplay=true;el.setAttribute('playsinline','');el.preload='auto';
+el.setAttribute('crossorigin','anonymous');
 var supported=canPlay(el,mime);
 if(supported){
-el.src=url;vs.appendChild(el);curEl=el;
+el.src=url;
+// Attach sidecar subtitle tracks (served as WebVTT via ?vtt=1). First one shows by default.
+if(kind==='v'&&it.dataset.subs){
+try{var subs=JSON.parse(it.dataset.subs);
+subs.forEach(function(su,si){var tr=document.createElement('track');tr.kind='subtitles';
+tr.label=su.label;tr.srclang=(su.label||'sub').slice(0,5);tr.src=su.url;if(si===0)tr.default=true;
+el.appendChild(tr);});
+if(subs.length){el.addEventListener('loadedmetadata',function(){try{if(el.textTracks&&el.textTracks[0])el.textTracks[0].mode='showing';}catch(_){}}); }
+}catch(_){}
+}
+vs.appendChild(el);curEl=el;
+// Resume playback position: restore the last-saved offset for this exact URL and keep it
+// updated as it plays, so re-opening a long video continues where you left off.
+var rkey='ds-pos:'+url;
+el.addEventListener('loadedmetadata',function(){try{var p=parseFloat(localStorage.getItem(rkey)||'0');
+if(p>3&&el.duration&&p<el.duration-5)el.currentTime=p;}catch(_){}});
+var last=0;el.addEventListener('timeupdate',function(){var t=el.currentTime;if(Math.abs(t-last)>=3){last=t;try{localStorage.setItem(rkey,String(t));}catch(_){}}});
+el.addEventListener('ended',function(){try{localStorage.removeItem(rkey);}catch(_){}});
 el.addEventListener('error',function(){showFallback();});
 // When a track finishes, auto-advance to the next playable media in the folder.
 el.addEventListener('ended',function(){if(curIdx+1<media.length)playAt(curIdx+1);});
