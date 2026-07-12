@@ -63,7 +63,7 @@ sealed interface UiScreen {
     /**
      * In-app viewer for text and images. Rendering these in-app (instead of firing an external
      * ACTION_VIEW) means a TV with no text/image app — or a buggy one — never breaks the flow,
-     * and there's no jarring app switch on a 10-foot UI. Only video/audio delegate to a native
+     * and there's no jarring app switch on a 10-foot UI. Only video delegates to a native
      * player, where hardware decoding actually matters.
      */
     data class Viewer(
@@ -75,6 +75,22 @@ sealed interface UiScreen {
         val loading: Boolean = false,
         val error: String? = null
     ) : UiScreen
+
+    /**
+     * In-app audio player. Audio decoding is cheap and MediaPlayer handles mp3/aac/ogg/wav/flac
+     * natively on every Android version, so we play songs in-app rather than handing them to an
+     * external app (which may be missing or buggy). [queue] is the folder's audio files so the
+     * user gets prev/next; [index] is the currently-playing track.
+     */
+    data class AudioPlayer(
+        val server: DiscoveredServer,
+        val queue: List<RemoteEntry>,
+        val index: Int
+    ) : UiScreen {
+        val current: RemoteEntry get() = queue[index]
+        val hasPrev: Boolean get() = index > 0
+        val hasNext: Boolean get() = index < queue.lastIndex
+    }
 }
 
 class BrowseViewModel(app: Application) : AndroidViewModel(app) {
@@ -324,12 +340,35 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             }
+            entry.isAudio -> {
+                // In-app audio player with the folder's other songs as a prev/next queue.
+                val queue = rawEntries.filter { it.isAudio }
+                val idx = queue.indexOfFirst { it.name == entry.name }.coerceAtLeast(0)
+                _screen.value = UiScreen.AudioPlayer(cur.server, queue, idx)
+            }
             else -> {
-                // Playable media (or anything else) → native player via ACTION_VIEW.
+                // Video (or anything else) → native player via ACTION_VIEW, where hardware
+                // decoding and broad codec support matter.
                 _open.tryEmit(OpenRequest(entry.url, entry.mime, entry.subUrl))
             }
         }
     }
+
+    // ── Audio player controls ─────────────────────────────────────────────
+    fun audioNext() {
+        (_screen.value as? UiScreen.AudioPlayer)?.let {
+            if (it.hasNext) _screen.value = it.copy(index = it.index + 1)
+        }
+    }
+
+    fun audioPrev() {
+        (_screen.value as? UiScreen.AudioPlayer)?.let {
+            if (it.hasPrev) _screen.value = it.copy(index = it.index - 1)
+        }
+    }
+
+    /** Track finished on its own — auto-advance if there's a next song. */
+    fun audioCompleted() = audioNext()
 
     // ── Real-time cast: long-poll the phone; when it casts, open in the native player ──
     private fun startPollLoop() {
@@ -367,6 +406,10 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
             is UiScreen.Auth -> { _screen.value = backToDiscovery(); return true }
             is UiScreen.Viewer -> {
                 // Return to the folder listing we came from, from cache (no refetch).
+                _screen.value = render(cur.server, currentPath, "", SortMode.DEFAULT)
+                return true
+            }
+            is UiScreen.AudioPlayer -> {
                 _screen.value = render(cur.server, currentPath, "", SortMode.DEFAULT)
                 return true
             }

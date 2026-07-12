@@ -34,6 +34,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -97,6 +98,7 @@ class MainActivity : ComponentActivity() {
                         is UiScreen.Auth -> AuthScreen(s, vm::submitAuth, vm::forgetSaved)
                         is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort, vm::clearCastToast)
                         is UiScreen.Viewer -> ViewerScreen(s)
+                        is UiScreen.AudioPlayer -> AudioPlayerScreen(s, vm::audioPrev, vm::audioNext, vm::audioCompleted)
                     }
                 }
             }
@@ -343,6 +345,84 @@ private fun RemoteImage(url: String) {
     }
 }
 
+// ── In-app audio player ──────────────────────────────────────────────────────
+@Composable
+private fun AudioPlayerScreen(
+    state: UiScreen.AudioPlayer,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+    onCompleted: () -> Unit
+) {
+    val track = state.current
+    var playing by remember { mutableStateOf(true) }
+    var positionMs by remember(track.url) { mutableStateOf(0) }
+    var durationMs by remember(track.url) { mutableStateOf(0) }
+    var failed by remember(track.url) { mutableStateOf(false) }
+
+    // One MediaPlayer, recreated whenever the track URL changes. Released on dispose.
+    val player = remember { android.media.MediaPlayer() }
+    DisposableEffect(track.url) {
+        failed = false; positionMs = 0; durationMs = 0
+        runCatching {
+            player.reset()
+            player.setAudioStreamType(android.media.AudioManager.STREAM_MUSIC)
+            player.setDataSource(track.url)
+            player.setOnPreparedListener { mp -> durationMs = mp.duration; mp.start(); playing = true }
+            player.setOnCompletionListener { onCompleted() }
+            player.setOnErrorListener { _, _, _ -> failed = true; true }
+            player.prepareAsync()
+        }.onFailure { failed = true }
+        onDispose { runCatching { player.reset() } }
+    }
+    // Release the player entirely when leaving the screen.
+    DisposableEffect(Unit) { onDispose { runCatching { player.release() } } }
+
+    // Poll position while playing so the progress line advances.
+    LaunchedEffect(track.url, playing) {
+        while (playing && !failed) {
+            positionMs = runCatching { player.currentPosition }.getOrDefault(positionMs)
+            kotlinx.coroutines.delay(500)
+        }
+    }
+
+    Column(
+        Modifier.fillMaxSize().padding(48.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("🎵", fontSize = 64.sp)
+        Spacer(Modifier.height(16.dp))
+        Text(track.name, color = TEXT, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+        Text(state.server.name, color = MUTED, fontSize = 14.sp)
+        Spacer(Modifier.height(6.dp))
+        Text("Track ${state.index + 1} of ${state.queue.size}", color = MUTED, fontSize = 13.sp)
+        Spacer(Modifier.height(18.dp))
+        if (failed) {
+            Text("Couldn't play this file", color = ERR, fontSize = 15.sp)
+        } else {
+            Text("${fmtTime(positionMs)}  /  ${fmtTime(durationMs)}", color = ACCENT, fontFamily = FontFamily.Monospace, fontSize = 15.sp)
+        }
+        Spacer(Modifier.height(20.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SortChip("⏮ Prev", false) { if (state.hasPrev) onPrev() }
+            Spacer(Modifier.width(12.dp))
+            FocusableChip(if (playing) "⏸ Pause" else "▶ Play") {
+                if (playing) { runCatching { player.pause() }; playing = false }
+                else { runCatching { player.start() }; playing = true }
+            }
+            Spacer(Modifier.width(12.dp))
+            SortChip("Next ⏭", false) { if (state.hasNext) onNext() }
+        }
+        Spacer(Modifier.height(16.dp))
+        Text("Back to close", color = MUTED, fontSize = 12.sp)
+    }
+}
+
+private fun fmtTime(ms: Int): String {
+    if (ms <= 0) return "0:00"
+    val s = ms / 1000; return "%d:%02d".format(s / 60, s % 60)
+}
+
 // ── Browse ──────────────────────────────────────────────────────────────────
 @Composable
 private fun BrowseScreen(
@@ -449,7 +529,7 @@ private fun ServerFooter(state: UiScreen.Browse) {
             color = MUTED, fontSize = 11.sp)
         Text("Served by ${state.server.name} @ ${state.server.host}:${state.server.port}",
             color = MUTED, fontSize = 11.sp)
-        Text("Files open in your device's own player (VLC / MX / etc)", color = MUTED, fontSize = 11.sp)
+        Text("Text, images & audio open in-app; video opens in your device's player (VLC / MX)", color = MUTED, fontSize = 11.sp)
     }
 }
 
