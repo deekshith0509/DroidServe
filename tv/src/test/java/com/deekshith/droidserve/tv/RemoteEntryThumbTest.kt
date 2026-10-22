@@ -19,4 +19,11 @@ class RemoteEntryThumbTest {
             RemoteEntry("a.jpg", false, 1, 0, "image/jpeg", "u", thumbUrl = "http://h/thumb/a.jpg?w=320").thumbUrl
         )
     }
+
+    @Test fun apkDetection() {
+        assertTrue(RemoteEntry("x.apk", false, 1, 0, "application/vnd.android.package-archive", "u").isApk)
+        assertTrue(RemoteEntry("X.APK", false, 1, 0, "application/octet-stream", "u").isApk)
+        assertFalse(RemoteEntry("x.mp4", false, 1, 0, "video/mp4", "u").isApk)
+        assertFalse(RemoteEntry("d", true, 0, 0, "inode/directory", "u").isApk)
+    }
 }

@@ -19,6 +19,8 @@ enum class SortMode { DEFAULT, NAME, SIZE }
 
 enum class ViewerKind { TEXT, IMAGE }
 
+enum class ApkPhase { DOWNLOADING, READY, FAILED }
+
 /** A media stream to hand to the OS default player (VLC/MX/etc) via ACTION_VIEW. */
 data class OpenRequest(
     val url: String,
@@ -98,6 +100,15 @@ sealed interface UiScreen {
         val hasPrev: Boolean get() = index > 0
         val hasNext: Boolean get() = index < queue.lastIndex
     }
+
+    /** Downloading an APK from the phone, then handing it to the system installer (no ADB). */
+    data class ApkInstall(
+        val server: DiscoveredServer,
+        val name: String,
+        val phase: ApkPhase,
+        val progress: Int = 0,
+        val error: String? = null
+    ) : UiScreen
 }
 
 class BrowseViewModel(app: Application) : AndroidViewModel(app) {
@@ -115,6 +126,11 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     // One-shot events telling the Activity to fire an ACTION_VIEW intent (open in native player).
     private val _open = MutableSharedFlow<OpenRequest>(extraBufferCapacity = 4)
     val open: SharedFlow<OpenRequest> = _open.asSharedFlow()
+
+    // One-shot events telling the Activity to launch the system package installer on a local APK.
+    private val _install = MutableSharedFlow<java.io.File>(extraBufferCapacity = 2)
+    val install: SharedFlow<java.io.File> = _install.asSharedFlow()
+    private var lastApkFile: java.io.File? = null
 
     private var client: DroidServeClient? = null
     private var rawEntries: List<RemoteEntry> = emptyList()
@@ -325,6 +341,9 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         (_screen.value as? UiScreen.Browse)?.let { _screen.value = it.copy(gridMode = gridMode) }
     }
 
+    /** Re-fire the install intent for the already-downloaded APK (e.g. after granting unknown sources). */
+    fun installReady() { lastApkFile?.let { _install.tryEmit(it) } }
+
     /**
      * Click a row: folders navigate; text & images open in the IN-APP viewer (robust, no app
      * switch, works even if the TV has no/only-broken text/image apps); video & audio delegate
@@ -363,11 +382,45 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 val idx = queue.indexOfFirst { it.name == entry.name }.coerceAtLeast(0)
                 _screen.value = UiScreen.AudioPlayer(cur.server, queue, idx)
             }
+            entry.isApk -> downloadAndInstallApk(cur.server, entry)
             else -> {
                 // Video (or anything else) → native player via ACTION_VIEW, where hardware
                 // decoding and broad codec support matter. Hand it the last resume position so
                 // playback continues where it stopped.
                 _open.tryEmit(OpenRequest(entry.url, entry.mime, entry.subUrl, playback.get(entry.url)))
+            }
+        }
+    }
+
+    // Pull an APK local (the system installer cannot read a remote URL), stream with progress,
+    // then emit an install event the Activity turns into a FileProvider ACTION_VIEW install intent.
+    private fun downloadAndInstallApk(server: DiscoveredServer, entry: RemoteEntry) {
+        _screen.value = UiScreen.ApkInstall(server, entry.name, ApkPhase.DOWNLOADING, 0)
+        viewModelScope.launch {
+            try {
+                val dir = java.io.File(getApplication<Application>().cacheDir, "apk")
+                val dest = java.io.File(dir, entry.name.replace(Regex("[^A-Za-z0-9._-]"), "_"))
+                withContext(Dispatchers.IO) {
+                    val c = client ?: run {
+                        val (u, p) = connectedCreds ?: ("" to null)
+                        DroidServeClient(connectedBase ?: server.baseUrl, u, p)
+                    }
+                    c.downloadTo(entry.url, dest) { done, total ->
+                        val pct = if (total > 0) ((done * 100) / total).toInt() else 0
+                        (_screen.value as? UiScreen.ApkInstall)?.let {
+                            if (it.name == entry.name && it.progress != pct) _screen.value = it.copy(progress = pct)
+                        }
+                    }
+                }
+                lastApkFile = dest
+                (_screen.value as? UiScreen.ApkInstall)?.let {
+                    if (it.name == entry.name) _screen.value = it.copy(phase = ApkPhase.READY, progress = 100)
+                }
+                _install.tryEmit(dest)
+            } catch (e: Exception) {
+                (_screen.value as? UiScreen.ApkInstall)?.let {
+                    if (it.name == entry.name) _screen.value = it.copy(phase = ApkPhase.FAILED, error = e.message ?: "Download failed")
+                }
             }
         }
     }
@@ -437,6 +490,10 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 return true
             }
             is UiScreen.AudioPlayer -> {
+                _screen.value = render(cur.server, currentPath, "", SortMode.DEFAULT)
+                return true
+            }
+            is UiScreen.ApkInstall -> {
                 _screen.value = render(cur.server, currentPath, "", SortMode.DEFAULT)
                 return true
             }
