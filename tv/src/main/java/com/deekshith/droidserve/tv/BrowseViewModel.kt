@@ -109,6 +109,26 @@ sealed interface UiScreen {
         val progress: Int = 0,
         val error: String? = null
     ) : UiScreen
+
+    /** Recursive, folder-grouped music library (albums grid, searchable). */
+    data class MusicLibrary(
+        val server: DiscoveredServer,
+        val albums: List<MusicAlbum>,
+        val loading: Boolean = false,
+        val error: String? = null,
+        val filter: String = ""
+    ) : UiScreen {
+        val shown: List<MusicAlbum> get() =
+            if (filter.isBlank()) albums else filter.trim().lowercase().let { f ->
+                albums.filter { it.name.lowercase().contains(f) || it.songs.any { s -> s.name.lowercase().contains(f) } }
+            }
+    }
+
+    /** One album's song list. */
+    data class AlbumSongs(
+        val server: DiscoveredServer,
+        val album: MusicAlbum
+    ) : UiScreen
 }
 
 class BrowseViewModel(app: Application) : AndroidViewModel(app) {
@@ -131,6 +151,9 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private val _install = MutableSharedFlow<java.io.File>(extraBufferCapacity = 2)
     val install: SharedFlow<java.io.File> = _install.asSharedFlow()
     private var lastApkFile: java.io.File? = null
+
+    private var musicAlbums: List<MusicAlbum> = emptyList()
+    private var musicContext: MusicAlbum? = null   // set when a song is played from the music UI
 
     private var client: DroidServeClient? = null
     private var rawEntries: List<RemoteEntry> = emptyList()
@@ -344,6 +367,42 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     /** Re-fire the install intent for the already-downloaded APK (e.g. after granting unknown sources). */
     fun installReady() { lastApkFile?.let { _install.tryEmit(it) } }
 
+    // ── Music library ─────────────────────────────────────────────────────
+    fun openMusic() {
+        val server = (_screen.value as? UiScreen.Browse)?.server ?: return
+        musicContext = null
+        _screen.value = UiScreen.MusicLibrary(server, musicAlbums, loading = musicAlbums.isEmpty())
+        viewModelScope.launch {
+            try {
+                val albums = withContext(Dispatchers.IO) {
+                    val c = client ?: run {
+                        val (u, p) = connectedCreds ?: ("" to null)
+                        DroidServeClient(connectedBase ?: server.baseUrl, u, p)
+                    }
+                    c.fetchMusic()
+                }
+                musicAlbums = albums
+                (_screen.value as? UiScreen.MusicLibrary)?.let { _screen.value = it.copy(albums = albums, loading = false) }
+            } catch (e: Exception) {
+                (_screen.value as? UiScreen.MusicLibrary)?.let { _screen.value = it.copy(loading = false, error = e.message ?: "Failed to load music") }
+            }
+        }
+    }
+
+    fun setMusicFilter(text: String) {
+        (_screen.value as? UiScreen.MusicLibrary)?.let { _screen.value = it.copy(filter = text) }
+    }
+
+    fun openAlbum(album: MusicAlbum) {
+        (_screen.value as? UiScreen.MusicLibrary)?.let { _screen.value = UiScreen.AlbumSongs(it.server, album) }
+    }
+
+    fun playSong(album: MusicAlbum, index: Int) {
+        val server = (_screen.value as? UiScreen.AlbumSongs)?.server ?: return
+        musicContext = album
+        _screen.value = UiScreen.AudioPlayer(server, album.songs, index)
+    }
+
     /**
      * Click a row: folders navigate; text & images open in the IN-APP viewer (robust, no app
      * switch, works even if the TV has no/only-broken text/image apps); video & audio delegate
@@ -378,6 +437,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
             }
             entry.isAudio -> {
                 // In-app audio player with the folder's other songs as a prev/next queue.
+                musicContext = null
                 val queue = rawEntries.filter { it.isAudio }
                 val idx = queue.indexOfFirst { it.name == entry.name }.coerceAtLeast(0)
                 _screen.value = UiScreen.AudioPlayer(cur.server, queue, idx)
@@ -490,6 +550,17 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 return true
             }
             is UiScreen.AudioPlayer -> {
+                val mc = musicContext
+                _screen.value = if (mc != null) UiScreen.AlbumSongs(cur.server, mc)
+                                else render(cur.server, currentPath, "", SortMode.DEFAULT)
+                return true
+            }
+            is UiScreen.AlbumSongs -> {
+                _screen.value = UiScreen.MusicLibrary(cur.server, musicAlbums, loading = false)
+                return true
+            }
+            is UiScreen.MusicLibrary -> {
+                musicContext = null
                 _screen.value = render(cur.server, currentPath, "", SortMode.DEFAULT)
                 return true
             }

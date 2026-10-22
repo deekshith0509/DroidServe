@@ -12,6 +12,9 @@ data class MediaMeta(
     val width: Int = 0,
     val height: Int = 0,
     val durationMs: Long = 0,
+    val title: String = "",
+    val album: String = "",
+    val artist: String = "",
     val exif: Map<String, String> = emptyMap()
 )
 
@@ -37,6 +40,7 @@ class AndroidThumbGen(private val context: Context) : ThumbGen {
     override fun generate(uri: Uri, mime: String, w: Int): ByteArray? = when {
         mime.startsWith("image/") -> imageThumb(uri, w)
         mime.startsWith("video/") -> videoThumb(uri, w)
+        mime.startsWith("audio/") -> audioThumb(uri, w)
         else -> null
     }
 
@@ -65,6 +69,17 @@ class AndroidThumbGen(private val context: Context) : ThumbGen {
         } catch (_: Throwable) { null } finally { runCatching { r.release() } }
     }
 
+    // Embedded cover art (FLAC/MP3/etc.) → WebP, for the music library.
+    private fun audioThumb(uri: Uri, w: Int): ByteArray? {
+        val r = MediaMetadataRetriever()
+        return try {
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { r.setDataSource(it.fileDescriptor) } ?: return null
+            val pic = r.embeddedPicture ?: return null
+            val bmp = BitmapFactory.decodeByteArray(pic, 0, pic.size) ?: return null
+            encode(scaleTo(bmp, w))
+        } catch (_: Throwable) { null } finally { runCatching { r.release() } }
+    }
+
     override fun meta(uri: Uri, mime: String): MediaMeta? = try {
         when {
             mime.startsWith("image/") -> {
@@ -80,6 +95,18 @@ class AndroidThumbGen(private val context: Context) : ThumbGen {
                         width = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0,
                         height = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0,
                         durationMs = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0
+                    )
+                } finally { runCatching { r.release() } }
+            }
+            mime.startsWith("audio/") -> {
+                val r = MediaMetadataRetriever()
+                try {
+                    context.contentResolver.openFileDescriptor(uri, "r")?.use { r.setDataSource(it.fileDescriptor) }
+                    MediaMeta(
+                        durationMs = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0,
+                        title = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE).orEmpty(),
+                        album = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM).orEmpty(),
+                        artist = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST).orEmpty()
                     )
                 } finally { runCatching { r.release() } }
             }
