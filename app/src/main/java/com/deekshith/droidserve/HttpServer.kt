@@ -147,6 +147,13 @@ class HttpServer(
 
     private val threadIndex = AtomicInteger(0)
 
+    // ── Thumbnail service (visual UI) ────────────────────────────────────────
+    private val thumbCache = ThumbCache(File(context.cacheDir, "thumbs"))
+    private val thumbGen: ThumbGen = AndroidThumbGen(context)
+    private val thumbSem = Semaphore(3)                              // cap concurrent native decoders
+    private val thumbLocks = ConcurrentHashMap<String, Any>()       // de-dup identical in-flight renders
+    private val metaCache = ConcurrentHashMap<String, MediaMeta>()  // avoid re-probing for badges
+
     // Active ZIP producer threads run OUTSIDE the request pool, so stop() must track and
     // interrupt them explicitly — otherwise a large in-progress archive keeps reading SAF
     // and holding resources after the server is "stopped".
@@ -169,6 +176,7 @@ class HttpServer(
     }
 
     init {
+        runCatching { thumbCache.prune() }   // reclaim stale thumbnails once per server start
         setAsyncRunner(object : AsyncRunner {
             private val running: MutableSet<ClientHandler> =
                 Collections.synchronizedSet(mutableSetOf())
@@ -272,6 +280,22 @@ class HttpServer(
                 "Set-Cookie", "$COOKIE_NAME=$sessionToken; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
             )
             return resp
+        }
+
+        // ── Thumbnails + media metadata (visual UI) ─────────────────────────
+        // /thumb/<path>?w=160|320|480 → cached WebP preview · /meta/<path> → JSON facts.
+        // Lazy + disk-cached; the directory-listing hot path never decodes media.
+        if (path.startsWith("thumb/") || path.startsWith("meta/")) {
+            ServerStateHolder.incrementRequests()
+            val isMeta = path.startsWith("meta/")
+            val sub = path.removePrefix(if (isMeta) "meta/" else "thumb/")
+            val entry = resolveFast(sub)?.takeIf { !it.isDirectory }
+                ?: return errJson(Response.Status.NOT_FOUND, "Not found")
+            val r = if (isMeta) metaResponse(entry) else thumbResponse(entry, session)
+            if (needsCookie) r.addHeader(
+                "Set-Cookie", "$COOKIE_NAME=$sessionToken; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
+            )
+            return r
         }
 
         // ── Real-time phone -> TV cast channel ──────────────────────────────
@@ -516,11 +540,16 @@ class HttpServer(
                 subByStem[stem] = "$base/${FileUtils.encodeSeg(e.name)}?vtt=1" + if (tokQ.isEmpty()) "" else "&${tokQ.removePrefix("?")}"
             }
         }
+        val tokAmp = if (tokQ.isEmpty()) "" else "&" + tokQ.removePrefix("?")
         val rows = entries.map {
             val mime = if (it.isDirectory) "inode/directory" else FileUtils.getMimeType(it.name)
             val sub = if (!it.isDirectory && mime.startsWith("video/")) {
                 val stem = (if (it.name.contains('.')) it.name.substring(0, it.name.lastIndexOf('.')) else it.name).lowercase()
                 subByStem[stem]
+            } else null
+            val thumb = if (!it.isDirectory && FileUtils.isThumbnailable(it.name)) {
+                val rel = if (urlPath.isEmpty()) it.name else "${urlPath.trimEnd('/')}/${it.name}"
+                FileUtils.thumbUrlFor(rel, 320, tokAmp)
             } else null
             ApiJson.Row(
                 name = it.name,
@@ -528,6 +557,7 @@ class HttpServer(
                 size = it.size,
                 modified = it.lastModified,
                 mime = mime,
+                thumbUrl = thumb,
                 subUrl = sub
             )
         }
@@ -537,6 +567,83 @@ class HttpServer(
     private fun jsonResponse(body: String): Response =
         newFixedLengthResponse(Response.Status.OK, "application/json; charset=utf-8", body)
             .also { cors(it); it.addHeader("Cache-Control", "no-store") }
+
+    // Allowed thumbnail widths — bounds the number of cached variants per file.
+    private fun clampThumbW(raw: String?): Int = when (raw?.toIntOrNull()) {
+        160 -> 160; 480 -> 480; else -> 320
+    }
+
+    // Serve a cached WebP thumbnail, rendering (and caching) it on first request. Unsupported types
+    // or decode failures answer 204 so the client quietly falls back to a type icon — never 500.
+    private fun thumbResponse(entry: FileEntry, session: IHTTPSession): Response {
+        val mime = FileUtils.getMimeType(entry.name)
+        if (!FileUtils.isThumbnailable(entry.name)) return noThumb()
+        val w = clampThumbW(session.parameters["w"]?.firstOrNull())
+        val key = ThumbCache.key(entry.docId, entry.lastModified, entry.size, w)
+        val etag = ThumbCache.etag(key)
+        if (session.headers["if-none-match"] == etag)
+            return newFixedLengthResponse(Response.Status.NOT_MODIFIED, "image/webp", "")
+                .also { it.addHeader("ETag", etag); cors(it) }
+
+        var f = thumbCache.get(key)
+        if (f == null) {
+            // One render per key even under a burst of identical grid requests.
+            val lock = thumbLocks.computeIfAbsent(key) { Any() }
+            try {
+                synchronized(lock) {
+                    f = thumbCache.get(key) ?: run {
+                        thumbSem.acquire()
+                        try {
+                            thumbGen.generate(entry.uri, mime, w)
+                                ?.takeIf { it.isNotEmpty() }
+                                ?.let { thumbCache.put(key, it) }
+                        } finally { thumbSem.release() }
+                    }
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } finally {
+                thumbLocks.remove(key)
+            }
+        }
+        val file = f ?: return noThumb()
+        return try {
+            newFixedLengthResponse(Response.Status.OK, "image/webp", FileInputStream(file), file.length()).also {
+                it.addHeader("ETag", etag)
+                it.addHeader("Cache-Control", "public, max-age=604800, immutable")
+                cors(it)
+            }
+        } catch (_: Exception) { noThumb() }
+    }
+
+    private fun noThumb(): Response =
+        newFixedLengthResponse(Response.Status.NO_CONTENT, "image/webp", "").also { cors(it) }
+
+    // Media facts for badges / lightbox. Cached per (file, mtime, size) so a video is probed once.
+    private fun metaResponse(entry: FileEntry): Response {
+        val cacheKey = "${entry.docId}:${entry.lastModified}:${entry.size}"
+        val m = metaCache[cacheKey] ?: run {
+            if (metaCache.size > 512) metaCache.clear()   // soft bound
+            val computed = thumbGen.meta(entry.uri, FileUtils.getMimeType(entry.name)) ?: MediaMeta()
+            metaCache[cacheKey] = computed
+            computed
+        }
+        val sb = StringBuilder(128)
+        sb.append("{\"width\":").append(m.width)
+            .append(",\"height\":").append(m.height)
+            .append(",\"durationMs\":").append(m.durationMs)
+        if (m.exif.isNotEmpty()) {
+            sb.append(",\"exif\":{")
+            var first = true
+            for ((k, v) in m.exif) {
+                if (!first) sb.append(','); first = false
+                sb.append('"').append(ApiJson.escape(k)).append("\":\"").append(ApiJson.escape(v)).append('"')
+            }
+            sb.append('}')
+        }
+        sb.append('}')
+        return jsonResponse(sb.toString())
+    }
 
     private fun fileResponse(entry: FileEntry, session: IHTTPSession, forceDownload: Boolean): Response {
         val mime = FileUtils.getMimeType(entry.name)

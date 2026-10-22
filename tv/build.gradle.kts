@@ -11,8 +11,8 @@ android {
         applicationId = "com.deekshith.droidserve.tv"
         minSdk = 21
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.2.9"
+        versionCode = 4
+        versionName = "1.3.0"
     }
 
     buildTypes {

@@ -63,7 +63,8 @@ sealed interface UiScreen {
         val sort: SortMode = SortMode.DEFAULT,
         val loading: Boolean = false,
         val error: String? = null,
-        val casting: OpenRequest? = null   // transient toast when a phone casts to us
+        val casting: OpenRequest? = null,  // transient toast when a phone casts to us
+        val gridMode: Boolean = true       // poster grid vs list in the browse screen
     ) : UiScreen
 
     /**
@@ -105,6 +106,8 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private val scanner = SubnetScanner(app)
     private val creds = CredentialStore(app)
     private val playback = PlaybackStore(app)
+    private val prefs = app.getSharedPreferences("ds_tv", android.content.Context.MODE_PRIVATE)
+    private var gridMode = prefs.getBoolean("grid", true)
 
     private val _screen = MutableStateFlow<UiScreen>(UiScreen.Discovery())
     val screen: StateFlow<UiScreen> = _screen.asStateFlow()
@@ -311,8 +314,15 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
             fileCount = rawEntries.count { !it.isDir },
             dirCount = rawEntries.count { it.isDir },
             totalBytes = rawEntries.filter { !it.isDir }.sumOf { it.size },
-            filter = filter, sort = sort
+            filter = filter, sort = sort,
+            gridMode = gridMode
         )
+    }
+
+    fun toggleView() {
+        gridMode = !gridMode
+        prefs.edit().putBoolean("grid", gridMode).apply()
+        (_screen.value as? UiScreen.Browse)?.let { _screen.value = it.copy(gridMode = gridMode) }
     }
 
     /**

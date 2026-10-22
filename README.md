@@ -36,6 +36,7 @@ No internet connection required. No data leaves your local network. No accounts.
 | **Subtitles** | Sidecar `.srt`/`.vtt` files (e.g. `movie.en.srt`) are auto-detected and offered as selectable subtitle tracks; SubRip is converted to WebVTT on the fly |
 | **Play in your own player** | On desktop/laptop, formats the browser can't decode (mkv/avi/mov) offer "Open in default player" — a one-tap `.m3u` handoff to VLC / Kodi / mpv / MPC-HC on any OS |
 | **Inline preview** | Images, PDFs, text, code, and extensionless files render directly in the browser |
+| **Thumbnails & gallery** | Server-rendered image/video thumbnails, a grid/gallery view (toggle, remembered per device), duration/resolution badges, and an in-browser image lightbox — prev/next, zoom, slideshow, swipe, EXIF |
 | **Download anything** | Every file row has a ⬇ download button; folders download as ZIP |
 | **TV & remote friendly** | Arrow-key spatial navigation, visible focus rings, and overscan padding for Android TV / D-pad browsers |
 | **Reliable in background** | Foreground service + CPU/Wi-Fi locks + silent keep-alive defeat aggressive OEM freezers (Transsion XOS, MIUI, etc.) so transfers never stall |
@@ -60,6 +61,7 @@ it automatically.
 | **Works when mDNS is blocked** | Many routers block multicast between clients — the TV also does a **single, polite subnet probe** on launch (with an on-screen **🔄 Rescan**) so reachable servers still appear (protected servers included) |
 | **Pick, don't guess** | Multiple phones can run servers at once; the TV shows the full list and you choose (no auto-select) |
 | **Full D-pad navigation** | Arrow keys move between rows, OK opens folders/files, Back walks up — the file list gets focus by default; search and manual-IP entry are opt-in so text fields never trap the remote |
+| **Poster grid** | Thumbnail poster-grid browsing (and list), with video frame-grab / image thumbnails pulled from the server's cached `/thumb` service and a remembered grid/list toggle |
 | **In-app viewers** | Text (incl. `.srt`/`.log`/config), images, and audio open **inside the app** — no dependence on an external viewer that may be missing or broken on old TVs |
 | **In-app audio player** | Songs play in-app via the native `MediaPlayer` with the folder as a playlist (Prev/Next, auto-advance, live position) |
 | **Native video playback** | Video fires an `ACTION_VIEW` intent so it opens in the device's own player (VLC, MX, Kodi) for hardware decoding and broad codecs — no bundled player |

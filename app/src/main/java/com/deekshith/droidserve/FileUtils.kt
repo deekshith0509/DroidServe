@@ -80,6 +80,20 @@ object FileUtils {
     fun isHiddenOrSystem(name: String): Boolean =
         name.isNotEmpty() && (name[0] == '.' || name.startsWith("__"))
 
+    // Types we render server-side thumbnails for. Images + video have near-certain hit rates, so
+    // only these are advertised in listings — art-less audio / PDF / APK would mass-produce 204s.
+    fun isThumbnailable(name: String): Boolean {
+        val m = getMimeType(name)
+        return m.startsWith("image/") || m.startsWith("video/")
+    }
+
+    // Cached-thumbnail URL for a decoded relative path. [tokAmp] is "&tok=…" (or "" when auth off).
+    // Each path segment is percent-encoded so names with spaces/&/unicode stay valid in the URL.
+    fun thumbUrlFor(relPath: String, w: Int, tokAmp: String): String {
+        val enc = relPath.split('/').filter { it.isNotEmpty() }.joinToString("/") { encodeSeg(it) }
+        return "/thumb/$enc?w=$w$tokAmp"
+    }
+
     // ----------------------------------------------------------------------
     // ZIP — streams FileEntry list directly (no re-listing, no extra IPC)
     // ----------------------------------------------------------------------
@@ -167,6 +181,7 @@ object FileUtils {
 
         // Toolbar: current-folder ZIP + sort controls
         sb.append("""<div class="tb"><span class="st" id="st"></span>""")
+        sb.append("""<button class="sb" id="viewtg" title="Grid / list view">⊞ Grid</button>""")
         if (allowZip) {
             val here = encodePath(urlPath)
             val zipHref = if (here.isEmpty()) "/?zip=1" else "/$here?zip=1"
@@ -214,7 +229,7 @@ object FileUtils {
             if (e.isDirectory) {
                 sb.append("""<div class="item dir" data-name="${escHtml(eName)}" data-size="-1">""")
                 sb.append("""<a class="item-main" href="/""").append(href).append("""">""")
-                sb.append("""<span class="icon">📁</span>""")
+                sb.append("""<span class="thumb-wrap"><span class="icon">📁</span></span>""")
                 sb.append("""<div class="info"><div class="name">""").append(escHtml(eName))
                 sb.append("""</div><div class="meta">Directory</div></div></a>""")
                 if (allowZip) {
@@ -246,13 +261,18 @@ object FileUtils {
                         subsAttr = """ data-subs="${escHtml(json)}""""
                     }
                 }
+                // Thumbnailable files carry the cached-thumbnail URL so the grid can lazy-load it.
+                val thumbAttr = if (isThumbnailable(eName)) {
+                    val rel = if (urlPath.isEmpty()) eName else "${urlPath.trimEnd('/')}/$eName"
+                    """ data-thumb="${escHtml(thumbUrlFor(rel, 320, tokAmp))}""""
+                } else ""
                 // Every file carries its mime so client JS can offer "open with" (Android chooser).
-                sb.append("""<div class="item file" data-name="${escHtml(eName)}" data-size="${e.size}" data-mime="${escHtml(mime)}"$playAttr$subsAttr>""")
+                sb.append("""<div class="item file" data-name="${escHtml(eName)}" data-size="${e.size}" data-mime="${escHtml(mime)}"$playAttr$subsAttr$thumbAttr>""")
                 // Tapping the name opens the file directly: the browser plays/shows it inline
                 // where it can; on Android, JS below hands it to the OS "open with" chooser
                 // (VLC/MX for video, etc.). The ⬇ button is the only download action.
                 sb.append("""<a class="item-main" href="/""").append(href).append(tokQ).append("""">""")
-                sb.append("""<span class="icon">""").append(fileIcon(eName)).append("</span>")
+                sb.append("""<span class="thumb-wrap"><span class="icon">""").append(fileIcon(eName)).append("</span></span>")
                 sb.append("""<div class="info"><div class="name">""").append(escHtml(eName))
                 sb.append("""</div><div class="meta">""").append(escHtml(meta))
                 sb.append("</div></div></a>")
@@ -547,6 +567,37 @@ body.tv,body.tv *{cursor:none!important}
 .pl-ext{margin-left:auto;font-size:12px;color:var(--mu);display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap}
 .pl-ext a{color:var(--ac);text-decoration:none;border:1px solid var(--bd);border-radius:7px;padding:6px 10px}
 .pl-ext a:hover{border-color:var(--ac)}
+/* ── Thumbnail slot (neutral in list mode; the hero image area in grid mode) ── */
+.thumb-wrap{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+/* ── Grid / gallery view ─────────────────────────────────────────────────── */
+.list.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+@media(min-width:1000px){.list.grid{grid-template-columns:repeat(auto-fill,minmax(184px,1fr));gap:16px}}
+.list.grid .item{flex-direction:column;align-items:stretch;min-height:0}
+.list.grid .item-main{flex-direction:column;align-items:stretch;gap:0;padding:0}
+.list.grid .thumb-wrap{width:100%;aspect-ratio:16/10;position:relative;background:var(--sf2);overflow:hidden}
+.list.grid .gthumb{width:100%;height:100%;object-fit:cover;display:block}
+.list.grid .icon{font-size:42px;min-width:0}
+.list.grid .has-thumb .icon{display:none}
+.list.grid .info{padding:9px 11px;min-width:0}
+.list.grid .name{white-space:normal;max-height:2.6em;overflow:hidden}
+.list.grid .badge{position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.72);color:#fff;font-size:11px;padding:2px 6px;border-radius:5px;font-weight:700}
+.list.grid .btn-zip,.list.grid .btn-dl,.list.grid .btn-tv{border-left:none;border-top:1px solid var(--bd);padding:8px}
+/* ── Image lightbox ───────────────────────────────────────────────────────── */
+.lb-ov{position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.94);display:none;align-items:center;justify-content:center}
+.lb-ov.on{display:flex}
+.lb-img{max-width:94vw;max-height:84vh;object-fit:contain;transition:transform .15s;cursor:zoom-in;touch-action:none}
+.lb-img.zoom{cursor:zoom-out}
+.lb-top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:10px;padding:12px 16px;background:linear-gradient(rgba(0,0,0,.6),transparent)}
+.lb-ttl{flex:1;min-width:0;color:#fff;font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lb-x{background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:8px;width:38px;height:38px;font-size:18px;cursor:pointer}
+.lb-x:hover,.lb-x:focus-visible{background:rgba(255,255,255,.28);outline:none}
+.lb-nav{position:absolute;top:50%;transform:translateY(-50%);background:rgba(255,255,255,.12);border:none;color:#fff;width:52px;height:74px;font-size:34px;cursor:pointer;border-radius:10px}
+.lb-nav:hover,.lb-nav:focus-visible{background:rgba(255,255,255,.26);outline:none}
+.lb-prev{left:14px}.lb-next{right:14px}
+.lb-info{position:absolute;left:0;right:0;bottom:58px;text-align:center;color:#cbd5e1;font-size:12px;padding:0 16px;text-shadow:0 1px 3px #000}
+.lb-actions{position:absolute;bottom:14px;left:0;right:0;display:flex;gap:10px;justify-content:center}
+.lb-btn{background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:9px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer}
+.lb-btn:hover,.lb-btn:focus-visible{background:rgba(255,255,255,.28);outline:none}
 </style></head>
 <body>
 <header>
@@ -576,6 +627,14 @@ body.tv,body.tv *{cursor:none!important}
 <span class="pl-ext" id="plext"></span>
 </div>
 </div>
+</div>
+<div class="lb-ov" id="lbov">
+<div class="lb-top"><span class="lb-ttl" id="lbttl"></span><button class="lb-x" id="lbx" title="Close (Esc)">✕</button></div>
+<button class="lb-nav lb-prev" id="lbprev" title="Previous">‹</button>
+<img class="lb-img" id="lbimg" alt="">
+<button class="lb-nav lb-next" id="lbnext" title="Next">›</button>
+<div class="lb-info" id="lbinfo"></div>
+<div class="lb-actions"><button class="lb-btn" id="lbzoom">⤢ Zoom</button><button class="lb-btn" id="lbplay">▶ Slideshow</button></div>
 </div>
 <script>
 (function(){
@@ -708,6 +767,46 @@ e.preventDefault();
 ov.classList.add('on');document.body.style.overflow='hidden';
 playAt(media.indexOf(it));
 });});
+
+// ── Image lightbox (prev/next, zoom, slideshow, swipe, EXIF) ──────────────
+var imgs=all.filter(function(e){return (e.dataset.mime||'').indexOf('image/')===0;});
+if(imgs.length){
+var lbov=document.getElementById('lbov'),lbimg=document.getElementById('lbimg'),
+lbttl=document.getElementById('lbttl'),lbinfo=document.getElementById('lbinfo'),
+lbprev=document.getElementById('lbprev'),lbnext=document.getElementById('lbnext'),
+lbplay=document.getElementById('lbplay');
+var lbIdx=-1,lbZoom=false,lbSlide=null,lbSx=0;
+function lbMeta(t){return t.replace('/thumb/','/meta/').replace(/([?&])w=\d+(&|$)/,function(m,p1,p2){return p2==='&'?p1:'';});}
+function lbStop(){if(lbSlide){clearInterval(lbSlide);lbSlide=null;lbplay.textContent='▶ Slideshow';}}
+function lbShow(i){
+if(i<0||i>=imgs.length)return;lbIdx=i;lbZoom=false;
+var it=imgs[i],a=it.querySelector('.item-main');
+lbimg.classList.remove('zoom');lbimg.style.transform='';
+lbimg.src=a.getAttribute('href');lbttl.textContent=it.dataset.name||'';lbinfo.textContent='';
+lbprev.style.visibility=i>0?'':'hidden';lbnext.style.visibility=i<imgs.length-1?'':'hidden';
+var t=it.dataset.thumb;
+if(t){fetch(lbMeta(t),{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}).then(function(m){
+if(!m||lbIdx!==i)return;var p=[];if(m.width>0)p.push(m.width+'×'+m.height);
+if(m.exif){if(m.exif.Model)p.push(m.exif.Model);if(m.exif.DateTime)p.push(m.exif.DateTime);}
+lbinfo.textContent=p.join('  ·  ');}).catch(function(){});}
+}
+function lbOpen(i){lbov.classList.add('on');document.body.style.overflow='hidden';lbShow(i);}
+function lbClose(){lbov.classList.remove('on');document.body.style.overflow='';lbimg.src='';lbStop();}
+function lbTog(){lbZoom=!lbZoom;lbimg.classList.toggle('zoom',lbZoom);lbimg.style.transform=lbZoom?'scale(2)':'';}
+imgs.forEach(function(it){it.querySelector('.item-main').addEventListener('click',function(e){e.preventDefault();lbOpen(imgs.indexOf(it));});});
+lbprev.addEventListener('click',function(){lbShow(lbIdx-1);});
+lbnext.addEventListener('click',function(){lbShow(lbIdx+1);});
+document.getElementById('lbx').addEventListener('click',lbClose);
+document.getElementById('lbzoom').addEventListener('click',lbTog);
+lbimg.addEventListener('click',lbTog);
+lbov.addEventListener('click',function(e){if(e.target===lbov)lbClose();});
+lbplay.addEventListener('click',function(){if(lbSlide){lbStop();}else{lbplay.textContent='⏸ Stop';lbSlide=setInterval(function(){lbShow(lbIdx<imgs.length-1?lbIdx+1:0);},3000);}});
+document.addEventListener('keydown',function(e){if(!lbov.classList.contains('on'))return;
+e.stopImmediatePropagation();
+if(e.key==='Escape')lbClose();else if(e.key==='ArrowRight'){e.preventDefault();lbShow(lbIdx+1);}else if(e.key==='ArrowLeft'){e.preventDefault();lbShow(lbIdx-1);}});
+lbimg.addEventListener('touchstart',function(e){lbSx=e.touches[0].clientX;},{passive:true});
+lbov.addEventListener('touchend',function(e){var dx=e.changedTouches[0].clientX-lbSx;if(Math.abs(dx)>50)lbShow(dx<0?lbIdx+1:lbIdx-1);});
+}
 }
 
 // ── Play on TV: push this media file to a DroidServe TV app on the network ──
@@ -738,6 +837,34 @@ else if(m==='n')arr=all.slice().sort(function(a,b){return grp(a)-grp(b)||a.datas
 else arr=all.slice().sort(function(a,b){return grp(a)-grp(b)||Number(b.dataset.size||0)-Number(a.dataset.size||0);});
 arr.forEach(function(e){ls.appendChild(e);});
 });});
+
+// ── Grid / gallery view + lazy thumbnails + media badges ──────────────────
+(function(){
+var tg=document.getElementById('viewtg');if(!tg)return;
+var obs=null;
+function metaUrlOf(t){return t.replace('/thumb/','/meta/').replace(/([?&])w=\d+(&|$)/,function(m,p1,p2){return p2==='&'?p1:'';});}
+function loadThumb(it){
+var url=it.dataset.thumb;if(!url)return;
+var wrap=it.querySelector('.thumb-wrap');if(!wrap||wrap.querySelector('.gthumb'))return;
+var img=document.createElement('img');img.className='gthumb';img.loading='lazy';img.decoding='async';img.alt='';
+img.onload=function(){it.classList.add('has-thumb');};img.onerror=function(){img.remove();};
+img.src=url;wrap.appendChild(img);
+fetch(metaUrlOf(url),{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}).then(function(m){
+if(!m)return;var b='';
+if(m.durationMs>0){var s=Math.round(m.durationMs/1000);b=Math.floor(s/60)+':'+('0'+(s%60)).slice(-2);}
+else if(m.width>0&&m.height>0){b=m.width+'×'+m.height;}
+if(b){var sp=document.createElement('span');sp.className='badge';sp.textContent=b;wrap.appendChild(sp);}
+}).catch(function(){});
+}
+function applyView(v){
+if(v==='grid'){ls.classList.add('grid');tg.textContent='☰ List';
+if(!obs)obs=new IntersectionObserver(function(es,o){es.forEach(function(en){if(en.isIntersecting){o.unobserve(en.target);loadThumb(en.target);}});},{rootMargin:'300px'});
+all.forEach(function(it){if(it.dataset.thumb)obs.observe(it);});
+}else{ls.classList.remove('grid');tg.textContent='⊞ Grid';}
+}
+tg.addEventListener('click',function(){var v=ls.classList.contains('grid')?'list':'grid';localStorage.setItem('ds-view',v);applyView(v);});
+applyView(localStorage.getItem('ds-view')||'grid');
+})();
 
 // ── TV / D-pad remote navigation ─────────────────────────────────────────
 // Arrow keys move focus spatially between focusable controls; Enter activates.

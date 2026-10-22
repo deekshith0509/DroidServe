@@ -27,6 +27,8 @@ data class RemoteEntry(
     val mime: String,
     /** Absolute-from-root href (already token-suffixed) for fetching this resource. */
     val url: String,
+    /** Absolute cached-thumbnail URL (/thumb/…) for image/video rows, or null. */
+    val thumbUrl: String? = null,
     /** Absolute subtitle URL (WebVTT) for a video, or null. Handed to the external player. */
     val subUrl: String? = null
 ) {
@@ -42,6 +44,7 @@ data class RemoteEntry(
         mime == "application/x-subrip" || mime == "application/x-subtitle" || mime == "application/octet-stream" &&
         name.substringAfterLast('.', "").lowercase() in TEXTISH_EXTS
     val isPlayable: Boolean get() = isVideo || isAudio
+    val isThumbnailable: Boolean get() = isImage || isVideo
 }
 
 // Extensionless or octet-stream files that are really plain text (the web UI treats these inline
