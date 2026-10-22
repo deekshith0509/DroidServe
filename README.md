@@ -62,6 +62,7 @@ it automatically.
 | **Pick, don't guess** | Multiple phones can run servers at once; the TV shows the full list and you choose (no auto-select) |
 | **Full D-pad navigation** | Arrow keys move between rows, OK opens folders/files, Back walks up — the file list gets focus by default; search and manual-IP entry are opt-in so text fields never trap the remote |
 | **Poster grid** | Thumbnail poster-grid browsing (and list), with video frame-grab / image thumbnails pulled from the server's cached `/thumb` service and a remembered grid/list toggle |
+| **Install APKs** | Tap an `.apk` served by the phone → it downloads locally and opens the **system installer** (grant DroidServe "install unknown apps" once). No ADB, no root — the standard sideload flow, in-app |
 | **In-app viewers** | Text (incl. `.srt`/`.log`/config), images, and audio open **inside the app** — no dependence on an external viewer that may be missing or broken on old TVs |
 | **In-app audio player** | Songs play in-app via the native `MediaPlayer` with the folder as a playlist (Prev/Next, auto-advance, live position) |
 | **Native video playback** | Video fires an `ACTION_VIEW` intent so it opens in the device's own player (VLC, MX, Kodi) for hardware decoding and broad codecs — no bundled player |

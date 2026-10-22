@@ -2,7 +2,9 @@ package com.deekshith.droidserve.tv
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -100,6 +102,9 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             vm.open.collect { req -> openInDefaultApp(req) }
         }
+        lifecycleScope.launch {
+            vm.install.collect { file -> installApk(file) }
+        }
 
         setContent {
             if (lastCrash != null) {
@@ -113,6 +118,7 @@ class MainActivity : ComponentActivity() {
                         is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort, vm::clearCastToast, vm::toggleView)
                         is UiScreen.Viewer -> ViewerScreen(s)
                         is UiScreen.AudioPlayer -> AudioPlayerScreen(s, vm::audioPrev, vm::audioNext, vm::audioCompleted)
+                        is UiScreen.ApkInstall -> ApkInstallScreen(s, vm::installReady)
                     }
                 }
             }
@@ -164,6 +170,26 @@ class MainActivity : ComponentActivity() {
             } catch (e2: Exception) {
                 Toast.makeText(this, "No app can open this file", Toast.LENGTH_LONG).show()
             }
+        }
+    }
+
+    // Hand a downloaded APK to the system installer via a FileProvider content:// URI. On API 26+
+    // the app needs the per-source "install unknown apps" grant; if missing, route the user there.
+    private fun installApk(file: java.io.File) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                Toast.makeText(this, "Allow DroidServe to install apps, then press Install", Toast.LENGTH_LONG).show()
+                return
+            }
+            val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            startActivity(Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        } catch (e: Exception) {
+            Toast.makeText(this, "Install failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -578,6 +604,38 @@ private fun LazyListScope.entryRows(
     }
 }
 
+@Composable
+private fun ApkInstallScreen(state: UiScreen.ApkInstall, onInstall: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(48.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("📱", fontSize = 60.sp)
+        Spacer(Modifier.height(14.dp))
+        Text(state.name, color = TEXT, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+        Spacer(Modifier.height(18.dp))
+        when (state.phase) {
+            ApkPhase.DOWNLOADING -> {
+                CircularProgressIndicator(color = ACCENT)
+                Spacer(Modifier.height(12.dp))
+                Text("Downloading… ${state.progress}%", color = MUTED, fontSize = 15.sp)
+            }
+            ApkPhase.READY -> {
+                Text("Opening installer — confirm on screen.", color = MUTED, fontSize = 15.sp)
+                Spacer(Modifier.height(16.dp))
+                FocusableChip("Install") { onInstall() }
+                Spacer(Modifier.height(10.dp))
+                Text("If it warns about 'unknown apps', allow DroidServe, then press Install.",
+                    color = MUTED, fontSize = 12.sp)
+            }
+            ApkPhase.FAILED -> Text("Failed: ${state.error}", color = ERR, fontSize = 15.sp)
+        }
+        Spacer(Modifier.height(16.dp))
+        Text("Back to cancel", color = MUTED, fontSize = 12.sp)
+    }
+}
+
 // Thumbnail tile: paints the cached bitmap instantly, else loads off-main and falls back to the
 // type emoji. No image library — same HttpURLConnection + BitmapFactory path as the image viewer.
 @Composable
@@ -720,7 +778,7 @@ private fun statusLine(s: UiScreen.Browse): String {
 }
 
 private fun iconFor(e: RemoteEntry): String = when {
-    e.isDir -> "📁"; e.isVideo -> "🎬"; e.isAudio -> "🎵"; e.isImage -> "🖼️"; e.isText -> "📝"; else -> "📄"
+    e.isDir -> "📁"; e.isVideo -> "🎬"; e.isAudio -> "🎵"; e.isImage -> "🖼️"; e.isApk -> "📱"; e.isText -> "📝"; else -> "📄"
 }
 
 private fun metaFor(e: RemoteEntry): String {

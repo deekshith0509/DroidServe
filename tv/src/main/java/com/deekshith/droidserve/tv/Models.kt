@@ -45,6 +45,7 @@ data class RemoteEntry(
         name.substringAfterLast('.', "").lowercase() in TEXTISH_EXTS
     val isPlayable: Boolean get() = isVideo || isAudio
     val isThumbnailable: Boolean get() = isImage || isVideo
+    val isApk: Boolean get() = mime == "application/vnd.android.package-archive" || name.endsWith(".apk", ignoreCase = true)
 }
 
 // Extensionless or octet-stream files that are really plain text (the web UI treats these inline

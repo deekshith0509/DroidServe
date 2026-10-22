@@ -1,6 +1,7 @@
 package com.deekshith.droidserve.tv
 
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -126,6 +127,33 @@ class DroidServeClient(
         } finally {
             conn.disconnect()
         }
+    }
+
+    /**
+     * Stream a (possibly large) file to [dest] on disk — used to pull an APK local before handing
+     * it to the system installer (the installer cannot read a remote http URL). [onProgress] gets
+     * (bytesSoFar, totalBytesOrMinus1). Runs off the main thread.
+     */
+    fun downloadTo(absoluteUrl: String, dest: File, onProgress: (Long, Long) -> Unit = { _, _ -> }) {
+        val conn = open(absoluteUrl).apply { readTimeout = 30_000 }   // large payloads over flaky Wi-Fi
+        try {
+            val code = conn.responseCode
+            if (code == 401) throw AuthException()
+            if (code !in 200..299) throw RuntimeException("HTTP $code")
+            val total = conn.contentLengthLong
+            dest.parentFile?.mkdirs()
+            conn.inputStream.use { input ->
+                dest.outputStream().use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    var done = 0L
+                    while (true) {
+                        val n = input.read(buf); if (n < 0) break
+                        out.write(buf, 0, n); done += n
+                        onProgress(done, total)
+                    }
+                }
+            }
+        } finally { conn.disconnect() }
     }
 
     private fun open(url: String): HttpURLConnection =
