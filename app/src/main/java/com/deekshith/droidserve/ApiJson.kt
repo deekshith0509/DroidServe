@@ -16,6 +16,8 @@ object ApiJson {
         val size: Long,
         val modified: Long,
         val mime: String,
+        /** Cached-thumbnail URL (/thumb/…) for image/video rows, or null. */
+        val thumbUrl: String? = null,
         /** Absolute-from-root subtitle URL (WebVTT via ?vtt=1) for a video, or null. */
         val subUrl: String? = null
     )
@@ -72,6 +74,7 @@ object ApiJson {
                 append("\"modified\":").append(e.modified).append(',')
                 append("\"mime\":\"").append(escape(e.mime)).append("\",")
                 append("\"url\":\"").append(escape(href + tokQ)).append('"')
+                if (e.thumbUrl != null) append(",\"thumbUrl\":\"").append(escape(e.thumbUrl)).append('"')
                 if (e.subUrl != null) append(",\"subUrl\":\"").append(escape(e.subUrl)).append('"')
                 append('}')
             }

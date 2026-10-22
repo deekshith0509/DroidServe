@@ -27,6 +27,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -105,7 +110,7 @@ class MainActivity : ComponentActivity() {
                     when (val s = screen) {
                         is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual, vm::rescan)
                         is UiScreen.Auth -> AuthScreen(s, vm::submitAuth, vm::forgetSaved)
-                        is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort, vm::clearCastToast)
+                        is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort, vm::clearCastToast, vm::toggleView)
                         is UiScreen.Viewer -> ViewerScreen(s)
                         is UiScreen.AudioPlayer -> AudioPlayerScreen(s, vm::audioPrev, vm::audioNext, vm::audioCompleted)
                     }
@@ -471,7 +476,8 @@ private fun BrowseScreen(
     onClick: (RemoteEntry) -> Unit,
     onFilter: (String) -> Unit,
     onSort: (SortMode) -> Unit,
-    onClearCast: () -> Unit
+    onClearCast: () -> Unit,
+    onToggleView: () -> Unit
 ) {
     val firstItemFocus = remember { FocusRequester() }
     // Search is opt-in: on a 10-foot D-pad UI an always-on text field would grab initial
@@ -493,6 +499,8 @@ private fun BrowseScreen(
             SortChip("Name", state.sort == SortMode.NAME) { onSort(SortMode.NAME) }
             Spacer(Modifier.width(8.dp))
             SortChip("Size ↓", state.sort == SortMode.SIZE) { onSort(SortMode.SIZE) }
+            Spacer(Modifier.width(8.dp))
+            SortChip(if (state.gridMode) "☰ List" else "⊞ Grid", false) { onToggleView() }
         }
         if (searchOpen) {
             Spacer(Modifier.height(8.dp))
@@ -516,6 +524,18 @@ private fun BrowseScreen(
             state.entries.isEmpty() ->
                 Text(if (state.total == 0) "Empty folder" else "No items match your filter.",
                     color = MUTED, fontSize = 15.sp)
+            state.gridMode -> LazyVerticalGrid(
+                columns = GridCells.Adaptive(160.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(state.entries.size, key = { state.entries[it].name + it }) { i ->
+                    val e = state.entries[i]
+                    val mod = if (i == 0) Modifier.focusRequester(firstItemFocus) else Modifier
+                    PosterCard(e, mod) { onClick(e) }
+                }
+                item(span = { GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(12.dp)); ServerFooter(state) }
+            }
             else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 entryRows(state.entries, firstItemFocus, onClick)
                 item { Spacer(Modifier.height(12.dp)); ServerFooter(state) }
@@ -545,13 +565,51 @@ private fun LazyListScope.entryRows(
         val e = entries[i]
         val mod = if (i == 0) Modifier.focusRequester(firstFocus) else Modifier
         FocusableRow(onClick = { onClick(e) }, extraModifier = mod) {
-            Text(iconFor(e), fontSize = 22.sp)
+            if (!e.isDir && e.thumbUrl != null)
+                Thumb(e.thumbUrl, iconFor(e), Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)))
+            else Text(iconFor(e), fontSize = 22.sp)
             Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f)) {
                 Text(e.name, color = TEXT, fontSize = 17.sp)
                 Text(metaFor(e), color = MUTED, fontSize = 12.sp)
             }
             Text(if (e.isDir) "›" else "▶", color = MUTED, fontSize = 18.sp)
+        }
+    }
+}
+
+// Thumbnail tile: paints the cached bitmap instantly, else loads off-main and falls back to the
+// type emoji. No image library — same HttpURLConnection + BitmapFactory path as the image viewer.
+@Composable
+private fun Thumb(url: String?, fallback: String, modifier: Modifier = Modifier) {
+    var bmp by remember(url) { mutableStateOf(url?.let { ThumbLoader.cached(it) }) }
+    LaunchedEffect(url) { if (url != null && bmp == null) bmp = ThumbLoader.load(url) }
+    Box(modifier.background(SURFACE), contentAlignment = Alignment.Center) {
+        val b = bmp
+        if (b != null) Image(b.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        else Text(fallback, fontSize = 30.sp)
+    }
+}
+
+@Composable
+private fun PosterCard(e: RemoteEntry, extraModifier: Modifier = Modifier, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    Column(
+        extraModifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .background(if (focused) FOCUS_BG else SURFACE)
+            .border(if (focused) 3.dp else 1.dp, if (focused) ACCENT else BORDER, RoundedCornerShape(12.dp))
+    ) {
+        Thumb(
+            if (e.isDir) null else e.thumbUrl,
+            iconFor(e),
+            Modifier.fillMaxWidth().aspectRatio(16f / 10f)
+        )
+        Column(Modifier.padding(10.dp)) {
+            Text(e.name, color = TEXT, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 2)
+            Text(metaFor(e), color = MUTED, fontSize = 11.sp, maxLines = 1)
         }
     }
 }

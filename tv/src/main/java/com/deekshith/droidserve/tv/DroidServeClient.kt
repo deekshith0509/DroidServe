@@ -56,6 +56,7 @@ class DroidServeClient(
                     modified = e.optLong("modified"),
                     mime = e.optString("mime"),
                     url = baseUrl + e.optString("url"),
+                    thumbUrl = e.optString("thumbUrl", "").takeIf { it.isNotEmpty() }?.let { baseUrl + it },
                     subUrl = e.optString("subUrl", "").takeIf { it.isNotEmpty() }?.let { baseUrl + it }
                 )
             )
