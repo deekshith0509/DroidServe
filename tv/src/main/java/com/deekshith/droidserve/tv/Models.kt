@@ -60,6 +60,14 @@ data class Listing(
     val entries: List<RemoteEntry>
 )
 
+/** One folder-grouped album from /api/music. [cover] and song URLs are absolute (token-carrying). */
+data class MusicAlbum(
+    val path: String,
+    val name: String,
+    val cover: String,
+    val songs: List<RemoteEntry>
+)
+
 /** A real-time command pushed from the phone (controller) to this TV (player). */
 data class CastCommand(
     val action: String,

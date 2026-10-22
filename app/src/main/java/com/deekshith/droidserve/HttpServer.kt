@@ -298,6 +298,17 @@ class HttpServer(
             return r
         }
 
+        // ── Music library (recursive, folder-grouped albums) ────────────────
+        if (path == "api/music") {
+            ServerStateHolder.incrementRequests()
+            val tokQ = if (authNeeded()) "?tok=${FileUtils.encodeSeg(sessionToken)}" else ""
+            val resp = jsonResponse(buildMusicJson(tokQ))
+            if (needsCookie) resp.addHeader(
+                "Set-Cookie", "$COOKIE_NAME=$sessionToken; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
+            )
+            return resp
+        }
+
         // ── Real-time phone -> TV cast channel ──────────────────────────────
         // /api/cast?path=<relative>   controller (web UI) pushes a media URL to the TV
         // /api/tv/poll                player (TV app) long-polls for the next command
@@ -576,8 +587,10 @@ class HttpServer(
     // Serve a cached WebP thumbnail, rendering (and caching) it on first request. Unsupported types
     // or decode failures answer 204 so the client quietly falls back to a type icon — never 500.
     private fun thumbResponse(entry: FileEntry, session: IHTTPSession): Response {
+        // No type gate here — ThumbGen returns null for anything it can't render (→ 204 + icon).
+        // This lets the music library fetch audio cover art while listings still only advertise
+        // thumbUrl for image/video (so random files are never mass-requested).
         val mime = FileUtils.getMimeType(entry.name)
-        if (!FileUtils.isThumbnailable(entry.name)) return noThumb()
         val w = clampThumbW(session.parameters["w"]?.firstOrNull())
         val key = ThumbCache.key(entry.docId, entry.lastModified, entry.size, w)
         val etag = ThumbCache.etag(key)
@@ -632,6 +645,9 @@ class HttpServer(
         sb.append("{\"width\":").append(m.width)
             .append(",\"height\":").append(m.height)
             .append(",\"durationMs\":").append(m.durationMs)
+        if (m.title.isNotEmpty()) sb.append(",\"title\":\"").append(ApiJson.escape(m.title)).append('"')
+        if (m.album.isNotEmpty()) sb.append(",\"album\":\"").append(ApiJson.escape(m.album)).append('"')
+        if (m.artist.isNotEmpty()) sb.append(",\"artist\":\"").append(ApiJson.escape(m.artist)).append('"')
         if (m.exif.isNotEmpty()) {
             sb.append(",\"exif\":{")
             var first = true
@@ -643,6 +659,70 @@ class HttpServer(
         }
         sb.append('}')
         return jsonResponse(sb.toString())
+    }
+
+    // Recursively gather audio files grouped by containing folder (folder = album) — no tag reads,
+    // so it is instant even for a 600-track library. Cover art + titles load lazily client-side via
+    // the cached /thumb and /meta services. Bounded against pathological trees (depth/size caps).
+    private fun buildMusicJson(tokQ: String): String {
+        val tokAmp = if (tokQ.isEmpty()) "" else "&" + tokQ.removePrefix("?")
+        val coverNames = setOf("cover", "folder", "front", "albumart", "album")
+        class Album(val path: String, val name: String) {
+            val songs = ArrayList<FileEntry>()
+            var coverRel: String? = null
+        }
+        val albums = LinkedHashMap<String, Album>()
+        var count = 0
+        fun enc(rel: String) = rel.split('/').filter { it.isNotEmpty() }.joinToString("/") { FileUtils.encodeSeg(it) }
+        fun walk(docId: String, prefix: String, depth: Int) {
+            if (depth > 12 || count > 5000) return
+            val entries = listFast(docId)
+            val coverFile = entries.firstOrNull {
+                !it.isDirectory &&
+                    it.name.substringBeforeLast('.', "").lowercase() in coverNames &&
+                    FileUtils.getMimeType(it.name).startsWith("image/")
+            }
+            for (e in entries) {
+                val rel = if (prefix.isEmpty()) e.name else "$prefix/${e.name}"
+                if (e.isDirectory) walk(e.docId, rel, depth + 1)
+                else if (FileUtils.getMimeType(e.name).startsWith("audio/")) {
+                    val alb = albums.getOrPut(prefix) {
+                        Album(prefix, if (prefix.isEmpty()) "Home" else prefix.substringAfterLast('/'))
+                    }
+                    alb.songs.add(e)
+                    count++
+                    if (alb.coverRel == null && coverFile != null)
+                        alb.coverRel = if (prefix.isEmpty()) coverFile.name else "$prefix/${coverFile.name}"
+                }
+            }
+        }
+        walk(rootDocId, "", 0)
+        val sb = StringBuilder(2048)
+        sb.append("{\"albums\":[")
+        var firstA = true
+        for (alb in albums.values) {
+            if (alb.songs.isEmpty()) continue
+            if (!firstA) sb.append(','); firstA = false
+            val songsSorted = alb.songs.sortedBy { it.name.lowercase() }
+            val coverRel = alb.coverRel
+                ?: (if (alb.path.isEmpty()) songsSorted[0].name else "${alb.path}/${songsSorted[0].name}")
+            sb.append("{\"path\":\"").append(ApiJson.escape(alb.path)).append('"')
+            sb.append(",\"name\":\"").append(ApiJson.escape(alb.name)).append('"')
+            sb.append(",\"cover\":\"/thumb/").append(enc(coverRel)).append("?w=300").append(tokAmp).append('"')
+            sb.append(",\"songs\":[")
+            var firstS = true
+            for (s in songsSorted) {
+                if (!firstS) sb.append(','); firstS = false
+                val srel = if (alb.path.isEmpty()) s.name else "${alb.path}/${s.name}"
+                sb.append("{\"name\":\"").append(ApiJson.escape(s.name)).append('"')
+                sb.append(",\"url\":\"/").append(enc(srel)).append(tokQ).append('"')
+                sb.append(",\"thumbUrl\":\"/thumb/").append(enc(srel)).append("?w=300").append(tokAmp).append('"')
+                sb.append('}')
+            }
+            sb.append("]}")
+        }
+        sb.append("]}")
+        return sb.toString()
     }
 
     private fun fileResponse(entry: FileEntry, session: IHTTPSession, forceDownload: Boolean): Response {

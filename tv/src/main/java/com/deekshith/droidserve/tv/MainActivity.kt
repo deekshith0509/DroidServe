@@ -115,10 +115,12 @@ class MainActivity : ComponentActivity() {
                     when (val s = screen) {
                         is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual, vm::rescan)
                         is UiScreen.Auth -> AuthScreen(s, vm::submitAuth, vm::forgetSaved)
-                        is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort, vm::clearCastToast, vm::toggleView)
+                        is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort, vm::clearCastToast, vm::toggleView, vm::openMusic)
                         is UiScreen.Viewer -> ViewerScreen(s)
                         is UiScreen.AudioPlayer -> AudioPlayerScreen(s, vm::audioPrev, vm::audioNext, vm::audioCompleted)
                         is UiScreen.ApkInstall -> ApkInstallScreen(s, vm::installReady)
+                        is UiScreen.MusicLibrary -> MusicLibraryScreen(s, vm::openAlbum, vm::setMusicFilter)
+                        is UiScreen.AlbumSongs -> AlbumSongsScreen(s, vm::playSong)
                     }
                 }
             }
@@ -503,7 +505,8 @@ private fun BrowseScreen(
     onFilter: (String) -> Unit,
     onSort: (SortMode) -> Unit,
     onClearCast: () -> Unit,
-    onToggleView: () -> Unit
+    onToggleView: () -> Unit,
+    onMusic: () -> Unit
 ) {
     val firstItemFocus = remember { FocusRequester() }
     // Search is opt-in: on a 10-foot D-pad UI an always-on text field would grab initial
@@ -527,6 +530,8 @@ private fun BrowseScreen(
             SortChip("Size ↓", state.sort == SortMode.SIZE) { onSort(SortMode.SIZE) }
             Spacer(Modifier.width(8.dp))
             SortChip(if (state.gridMode) "☰ List" else "⊞ Grid", false) { onToggleView() }
+            Spacer(Modifier.width(8.dp))
+            SortChip("🎵 Music", false) { onMusic() }
         }
         if (searchOpen) {
             Spacer(Modifier.height(8.dp))
@@ -633,6 +638,101 @@ private fun ApkInstallScreen(state: UiScreen.ApkInstall, onInstall: () -> Unit) 
         }
         Spacer(Modifier.height(16.dp))
         Text("Back to cancel", color = MUTED, fontSize = 12.sp)
+    }
+}
+
+// ── Music library ──────────────────────────────────────────────────────────
+@Composable
+private fun MusicLibraryScreen(
+    state: UiScreen.MusicLibrary,
+    onAlbum: (MusicAlbum) -> Unit,
+    onFilter: (String) -> Unit
+) {
+    var searchOpen by remember { mutableStateOf(false) }
+    val searchFocus = remember { FocusRequester() }
+    val firstFocus = remember { FocusRequester() }
+    Column(Modifier.fillMaxSize().padding(horizontal = 40.dp, vertical = 24.dp)) {
+        Text("🎵 Music", color = ACCENT, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Text("${state.albums.size} albums · ${state.albums.sumOf { it.songs.size }} songs", color = MUTED, fontSize = 13.sp)
+        Spacer(Modifier.height(10.dp))
+        SortChip("🔍 Search", searchOpen) { searchOpen = !searchOpen }
+        if (searchOpen) {
+            Spacer(Modifier.height(8.dp))
+            InputField(state.filter, onFilter, "Search songs / albums…", Modifier.width(360.dp).focusRequester(searchFocus))
+            LaunchedEffect(Unit) { runCatching { searchFocus.requestFocus() } }
+        }
+        Spacer(Modifier.height(10.dp))
+        when {
+            state.loading -> CircularProgressIndicator(color = ACCENT)
+            state.error != null -> Text("Error: ${state.error}", color = ERR, fontSize = 15.sp)
+            state.albums.isEmpty() -> Text("No music found in the shared folder.", color = MUTED, fontSize = 15.sp)
+            else -> LazyVerticalGrid(
+                columns = GridCells.Adaptive(160.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                val shown = state.shown
+                items(shown.size, key = { shown[it].path + it }) { i ->
+                    val alb = shown[i]
+                    val mod = if (i == 0) Modifier.focusRequester(firstFocus) else Modifier
+                    AlbumCard(alb, mod) { onAlbum(alb) }
+                }
+            }
+        }
+    }
+    LaunchedEffect(state.albums.size, searchOpen) {
+        if (!searchOpen && state.albums.isNotEmpty())
+            repeat(10) { if (runCatching { firstFocus.requestFocus() }.isSuccess) return@LaunchedEffect; kotlinx.coroutines.delay(60) }
+    }
+}
+
+@Composable
+private fun AlbumCard(album: MusicAlbum, extraModifier: Modifier = Modifier, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    Column(
+        extraModifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .background(if (focused) FOCUS_BG else SURFACE)
+            .border(if (focused) 3.dp else 1.dp, if (focused) ACCENT else BORDER, RoundedCornerShape(12.dp))
+    ) {
+        Thumb(album.cover, "🎵", Modifier.fillMaxWidth().aspectRatio(1f))
+        Column(Modifier.padding(10.dp)) {
+            Text(album.name, color = TEXT, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 2)
+            Text("${album.songs.size} songs", color = MUTED, fontSize = 11.sp)
+        }
+    }
+}
+
+@Composable
+private fun AlbumSongsScreen(state: UiScreen.AlbumSongs, onPlay: (MusicAlbum, Int) -> Unit) {
+    val album = state.album
+    val firstFocus = remember { FocusRequester() }
+    Column(Modifier.fillMaxSize().padding(horizontal = 40.dp, vertical = 24.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Thumb(album.cover, "🎵", Modifier.size(64.dp).clip(RoundedCornerShape(10.dp)))
+            Spacer(Modifier.width(14.dp))
+            Column {
+                Text(album.name, color = ACCENT, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                Text("${album.songs.size} songs · Back to albums", color = MUTED, fontSize = 13.sp)
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(album.songs.size, key = { album.songs[it].name + it }) { i ->
+                val s = album.songs[i]
+                val mod = if (i == 0) Modifier.focusRequester(firstFocus) else Modifier
+                FocusableRow(onClick = { onPlay(album, i) }, extraModifier = mod) {
+                    Text("▶", color = MUTED, fontSize = 16.sp)
+                    Spacer(Modifier.width(14.dp))
+                    Text(s.name, color = TEXT, fontSize = 16.sp, modifier = Modifier.weight(1f), maxLines = 2)
+                }
+            }
+        }
+    }
+    LaunchedEffect(album.path) {
+        repeat(10) { if (runCatching { firstFocus.requestFocus() }.isSuccess) return@LaunchedEffect; kotlinx.coroutines.delay(60) }
     }
 }
 

@@ -65,6 +65,37 @@ class DroidServeClient(
         return Listing(o.optString("path", path), list)
     }
 
+    /** Fetch the recursive, folder-grouped music library (albums + songs). Blocks; run off-main. */
+    fun fetchMusic(): List<MusicAlbum> {
+        val o = getJson("$baseUrl/api/music")
+        val arr = o.optJSONArray("albums") ?: return emptyList()
+        val out = ArrayList<MusicAlbum>(arr.length())
+        for (i in 0 until arr.length()) {
+            val a = arr.getJSONObject(i)
+            val sArr = a.optJSONArray("songs")
+            val songs = ArrayList<RemoteEntry>(sArr?.length() ?: 0)
+            if (sArr != null) for (j in 0 until sArr.length()) {
+                val s = sArr.getJSONObject(j)
+                songs.add(
+                    RemoteEntry(
+                        name = s.optString("name"), isDir = false, size = 0, modified = 0,
+                        mime = "audio/x-generic", url = baseUrl + s.optString("url"),
+                        thumbUrl = s.optString("thumbUrl", "").takeIf { it.isNotEmpty() }?.let { baseUrl + it }
+                    )
+                )
+            }
+            out.add(
+                MusicAlbum(
+                    path = a.optString("path"),
+                    name = a.optString("name"),
+                    cover = baseUrl + a.optString("cover"),
+                    songs = songs
+                )
+            )
+        }
+        return out
+    }
+
     /**
      * Long-poll the phone for the next cast command. The server blocks up to ~25s, then
      * returns 204 (no command) so we immediately re-poll. Returns null on 204/timeout.

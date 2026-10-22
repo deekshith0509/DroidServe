@@ -598,12 +598,36 @@ body.tv,body.tv *{cursor:none!important}
 .lb-actions{position:absolute;bottom:14px;left:0;right:0;display:flex;gap:10px;justify-content:center}
 .lb-btn{background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:9px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer}
 .lb-btn:hover,.lb-btn:focus-visible{background:rgba(255,255,255,.28);outline:none}
+/* ── Music library overlay ────────────────────────────────────────────────── */
+.mu-ov{position:fixed;inset:0;z-index:1050;background:var(--bg);display:none;flex-direction:column}
+.mu-ov.on{display:flex}
+.mu-hd{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--bd);background:var(--sf)}
+.mu-ttl{font-size:16px;font-weight:800;color:var(--ac);white-space:nowrap}
+.mu-hd input{flex:1;min-width:0;padding:8px 12px;border-radius:9px;border:1.5px solid var(--bd);background:var(--bg);color:var(--tx);font-size:14px;outline:none}
+.mu-hd input:focus{border-color:var(--ac)}
+.mu-body{flex:1;overflow:auto;padding:16px;max-width:1200px;margin:0 auto;width:100%}
+.mu-albums{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
+.mu-card{background:var(--sf);border:1px solid var(--bd);border-radius:12px;overflow:hidden;cursor:pointer;transition:border-color .12s}
+.mu-card:hover,.mu-card:focus-visible{border-color:var(--ac);box-shadow:0 0 0 2px var(--ac);outline:none}
+.mu-cov{width:100%;aspect-ratio:1;object-fit:cover;background:var(--sf2);display:block}
+.mu-cap{padding:8px 10px}
+.mu-nm{font-size:13px;font-weight:600;color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mu-ct{font-size:11px;color:var(--mu)}
+.mu-back{display:inline-block;color:var(--ac);cursor:pointer;margin-bottom:12px;font-size:14px}
+.mu-song{display:flex;align-items:center;gap:10px;padding:11px 12px;border:1px solid var(--bd);border-radius:10px;background:var(--sf);margin-bottom:6px;cursor:pointer;transition:border-color .12s}
+.mu-song:hover,.mu-song:focus-visible{border-color:var(--ac);background:var(--hv);outline:none}
+.mu-song.playing{border-color:var(--ac);color:var(--ac);font-weight:600}
+.mu-bar{display:flex;align-items:center;gap:10px;padding:10px 16px;border-top:1px solid var(--bd);background:var(--sf)}
+.mu-now{font-size:13px;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:26vw}
+.mu-bar audio{flex:1;min-width:0;height:36px}
+.mu-nav{background:var(--sf2);border:1px solid var(--bd);color:var(--tx);border-radius:8px;width:38px;height:38px;font-size:18px;cursor:pointer;flex-shrink:0}
+.mu-nav:hover{border-color:var(--ac);color:var(--ac)}
 </style></head>
 <body>
 <header>
 <div class="hr"><h1>📡 """
 
-    private val HTML_HEAD_2B = """</h1><button class="tgl" id="tg" title="Toggle theme" aria-label="Toggle theme">🌙</button></div>
+    private val HTML_HEAD_2B = """</h1><button class="tgl" id="mubtn" title="Music" aria-label="Music">🎵</button><button class="tgl" id="tg" title="Toggle theme" aria-label="Toggle theme">🌙</button></div>
 <input type="search" id="q" placeholder="Filter files in this folder…" autocomplete="off" autocorrect="off" spellcheck="false">
 <nav class="crumb">"""
 
@@ -635,6 +659,11 @@ body.tv,body.tv *{cursor:none!important}
 <button class="lb-nav lb-next" id="lbnext" title="Next">›</button>
 <div class="lb-info" id="lbinfo"></div>
 <div class="lb-actions"><button class="lb-btn" id="lbzoom">⤢ Zoom</button><button class="lb-btn" id="lbplay">▶ Slideshow</button></div>
+</div>
+<div class="mu-ov" id="muov">
+<div class="mu-hd"><span class="mu-ttl">🎵 Music</span><input type="search" id="muq" placeholder="Search songs / albums…" autocomplete="off" spellcheck="false"><button class="pl-x" id="mux" title="Close (Esc)">✕</button></div>
+<div class="mu-body" id="mubody"></div>
+<div class="mu-bar" id="mubar" style="display:none"><button class="mu-nav" id="muprev">‹</button><audio id="muaudio" controls preload="auto"></audio><button class="mu-nav" id="munext">›</button><span class="mu-now" id="munow"></span></div>
 </div>
 <script>
 (function(){
@@ -895,6 +924,55 @@ e.preventDefault();nav(k.slice(5).toLowerCase());
 });
 // Auto-focus the first file/folder so a remote has an immediate cursor.
 (function(){var f=document.querySelector('.item .item-main');if(f)f.focus();})();
+})();
+</script>
+<script>
+// ── Music library tab: folder-grouped albums, lazy cover art, FLAC streaming ──
+(function(){
+var btn=document.getElementById('mubtn'),ov=document.getElementById('muov'),body=document.getElementById('mubody'),
+q=document.getElementById('muq'),bar=document.getElementById('mubar'),audio=document.getElementById('muaudio'),now=document.getElementById('munow');
+if(!btn)return;
+var albums=null,queue=[],qi=-1,curAlbum=null;
+function esc(t){var d=document.createElement('div');d.textContent=t||'';return d.innerHTML;}
+function openOv(){ov.classList.add('on');document.body.style.overflow='hidden';if(albums===null)load();else if(!curAlbum)render();}
+function closeOv(){ov.classList.remove('on');document.body.style.overflow='';}
+btn.addEventListener('click',openOv);
+document.getElementById('mux').addEventListener('click',closeOv);
+function load(){
+body.innerHTML='<div style="color:var(--mu)">Loading music…</div>';
+fetch('/api/music',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}).then(function(d){
+albums=(d&&d.albums)||[];render();
+}).catch(function(){body.innerHTML='<div style="color:#f87171">Failed to load music</div>';});
+}
+function filtered(){var s=(q.value||'').toLowerCase();if(!s)return albums;
+return albums.filter(function(a){return a.name.toLowerCase().indexOf(s)>=0||a.songs.some(function(x){return x.name.toLowerCase().indexOf(s)>=0;});});}
+function render(){
+curAlbum=null;var list=filtered();
+if(!list||!list.length){body.innerHTML='<div style="color:var(--mu)">No music found in the shared folder.</div>';return;}
+var h='<div class="mu-albums">';
+list.forEach(function(a,i){h+='<div class="mu-card" tabindex="0" data-i="'+i+'"><img class="mu-cov" loading="lazy" src="'+a.cover+'" onerror="this.style.visibility=\'hidden\'"><div class="mu-cap"><div class="mu-nm">'+esc(a.name)+'</div><div class="mu-ct">'+a.songs.length+' songs</div></div></div>';});
+body.innerHTML=h+'</div>';
+Array.prototype.forEach.call(body.querySelectorAll('.mu-card'),function(c){
+function go(){showAlbum(list[+c.dataset.i]);}
+c.addEventListener('click',go);c.addEventListener('keydown',function(e){if(e.key==='Enter')go();});});
+}
+function showAlbum(a){
+curAlbum=a;var h='<div class="mu-back" id="muback" tabindex="0">‹ Albums</div><h2 style="font-size:17px;margin:0 0 10px">'+esc(a.name)+'</h2>';
+a.songs.forEach(function(s,i){h+='<div class="mu-song" tabindex="0" data-i="'+i+'">▶&nbsp;&nbsp;'+esc(s.name)+'</div>';});
+body.innerHTML=h;
+document.getElementById('muback').addEventListener('click',render);
+Array.prototype.forEach.call(body.querySelectorAll('.mu-song'),function(el){
+function go(){playFrom(a,+el.dataset.i);}
+el.addEventListener('click',go);el.addEventListener('keydown',function(e){if(e.key==='Enter')go();});});
+}
+function mark(){Array.prototype.forEach.call(body.querySelectorAll('.mu-song'),function(el,idx){el.classList.toggle('playing',curAlbum&&queue===curAlbum.songs&&idx===qi);});}
+function playFrom(a,i){queue=a.songs;qi=i;bar.style.display='flex';var s=queue[i];now.textContent=s.name;audio.src=s.url;audio.play().catch(function(){});mark();}
+function step(d){if(qi+d>=0&&qi+d<queue.length){qi+=d;var s=queue[qi];now.textContent=s.name;audio.src=s.url;audio.play().catch(function(){});mark();}}
+document.getElementById('muprev').addEventListener('click',function(){step(-1);});
+document.getElementById('munext').addEventListener('click',function(){step(1);});
+audio.addEventListener('ended',function(){step(1);});
+q.addEventListener('input',function(){if(!curAlbum)render();});
+document.addEventListener('keydown',function(e){if(ov.classList.contains('on')&&e.key==='Escape')closeOv();});
 })();
 </script></body></html>"""
 }
