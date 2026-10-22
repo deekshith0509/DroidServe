@@ -1,7 +1,18 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+// Release signing is sourced from a (git-ignored) keystore.properties at the repo root, or env
+// vars, so no secret lives in the build script. Absent → release is signed with the debug key,
+// which still installs for personal sideloading (swap in a real keystore for distribution).
+val keystoreProps = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val hasReleaseKeystore = (keystoreProps.getProperty("storeFile") ?: System.getenv("DS_STORE_FILE")) != null
 
 android {
     namespace = "com.deekshith.droidserve"
@@ -15,6 +26,15 @@ android {
         versionName = "1.3.0"
     }
 
+    signingConfigs {
+        if (hasReleaseKeystore) create("release") {
+            storeFile = rootProject.file(keystoreProps.getProperty("storeFile") ?: System.getenv("DS_STORE_FILE"))
+            storePassword = keystoreProps.getProperty("storePassword") ?: System.getenv("DS_STORE_PASSWORD")
+            keyAlias = keystoreProps.getProperty("keyAlias") ?: System.getenv("DS_KEY_ALIAS")
+            keyPassword = keystoreProps.getProperty("keyPassword") ?: System.getenv("DS_KEY_PASSWORD")
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -23,6 +43,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName(if (hasReleaseKeystore) "release" else "debug")
         }
         debug {
             isDebuggable = true
