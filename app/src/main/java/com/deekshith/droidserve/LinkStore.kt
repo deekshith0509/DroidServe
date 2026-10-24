@@ -37,11 +37,12 @@ object LinkStore {
      * Add a pasted URL. Blanks are ignored; an identical URL is de-duplicated (moved to the top).
      * Returns the new snapshot.
      */
-    fun add(url: String): Pair<Int, List<Link>> = synchronized(lock) {
+    fun add(url: String, label: String? = null): Pair<Int, List<Link>> = synchronized(lock) {
         val clean = sanitize(url)
         if (clean.isNotEmpty()) {
             links.removeAll { it.url == clean }
-            links.add(0, Link(nextId(), clean, sanitize(labelFor(clean)).ifEmpty { clean.take(60) }, System.currentTimeMillis()))
+            val lbl = sanitize(label.orEmpty()).ifEmpty { sanitize(labelFor(clean)) }.ifEmpty { clean.take(60) }
+            links.add(0, Link(nextId(), clean, lbl, System.currentTimeMillis()))
             while (links.size > CAP) links.removeAt(links.size - 1)
             bump()
         }
