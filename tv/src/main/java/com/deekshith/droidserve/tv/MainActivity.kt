@@ -169,7 +169,10 @@ class MainActivity : ComponentActivity() {
         // browser), and don't wait for a result — these aren't tracked for resume.
         if (req.forceChooser) {
             try {
-                startActivity(Intent.createChooser(intent, "Open with").apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+                // Launch the chooser FOR RESULT and WITHOUT NEW_TASK, so the player stacks on top of
+                // this activity in the same task — pressing Back then returns to the Links list
+                // instead of exiting to the Fire TV launcher.
+                startActivityForResult(Intent.createChooser(intent, "Open with"), REQ_PLAYER)
             } catch (e: Exception) {
                 Toast.makeText(this, "No app can open this link", Toast.LENGTH_LONG).show()
             }
@@ -366,7 +369,7 @@ private fun AuthScreen(
     var user by remember(state) { mutableStateOf(state.savedUsername ?: "") }
     var pass by remember(state) { mutableStateOf("") }
     Column(Modifier.fillMaxSize().padding(48.dp)) {
-        Text("🔒 ${state.server.name}", color = ACCENT, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+        Text("🔒 ${state.server.displayName}", color = ACCENT, fontSize = 26.sp, fontWeight = FontWeight.Bold)
         Text("This server is password protected", color = MUTED, fontSize = 15.sp)
         state.error?.let { Spacer(Modifier.height(8.dp)); Text(it, color = ERR, fontSize = 14.sp) }
         Spacer(Modifier.height(20.dp))
@@ -498,7 +501,7 @@ private fun AudioPlayerScreen(
         Text("🎵", fontSize = 64.sp)
         Spacer(Modifier.height(16.dp))
         Text(track.name, color = TEXT, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-        Text(state.server.name, color = MUTED, fontSize = 14.sp)
+        Text(state.server.displayName, color = MUTED, fontSize = 14.sp)
         Spacer(Modifier.height(6.dp))
         Text("Track ${state.index + 1} of ${state.queue.size}", color = MUTED, fontSize = 13.sp)
         Spacer(Modifier.height(18.dp))
@@ -554,8 +557,8 @@ private fun BrowseScreen(
     val searchFocus = remember { FocusRequester() }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 40.dp, vertical = 24.dp)) {
-        Text(state.server.name, color = ACCENT, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Text(breadcrumb(state.path), color = MUTED, fontSize = 14.sp)
+        Text(state.server.displayName, color = ACCENT, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        if (state.path.isNotEmpty()) Text(breadcrumb(state.path), color = MUTED, fontSize = 14.sp)
         Spacer(Modifier.height(12.dp))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -887,7 +890,7 @@ private fun ServerFooter(state: UiScreen.Browse) {
         Spacer(Modifier.height(4.dp))
         Text("${state.fileCount} files · ${state.dirCount} folders · ${formatSize(state.totalBytes)} in this folder",
             color = MUTED, fontSize = 11.sp)
-        Text("Served by ${state.server.name} @ ${state.server.host}:${state.server.port}",
+        Text("${state.server.displayName} @ ${state.server.host}:${state.server.port}",
             color = MUTED, fontSize = 11.sp)
         Text("Text, images & audio open in-app; video opens in your device's player (VLC / MX)", color = MUTED, fontSize = 11.sp)
     }
@@ -973,7 +976,7 @@ private fun InputField(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 private fun breadcrumb(path: String): String =
-    if (path.isEmpty()) "🏠 Home" else "🏠 Home / " + path.replace("/", " / ")
+    path.split("/").filter { it.isNotEmpty() }.joinToString(" / ")
 
 private fun statusLine(s: UiScreen.Browse): String {
     val shown = s.entries.size

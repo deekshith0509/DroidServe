@@ -376,7 +376,7 @@ class HttpServer(
                     // Resolve watch/embed pages to the direct media URL so the TV's player gets a
                     // real stream (an HTML page would just bounce the player straight back out).
                     val r = StreamResolver.resolve(url)
-                    val (v, list) = LinkStore.add(r.url, r.title)
+                    val (v, list) = LinkStore.add(r.url, r.title, r.playable)
                     return cookie(jsonResponse(ApiJson.links(v, list)))
                 }
                 "api/links/remove" -> {

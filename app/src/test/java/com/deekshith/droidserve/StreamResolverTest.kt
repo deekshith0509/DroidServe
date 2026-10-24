@@ -40,11 +40,15 @@ class StreamResolverTest {
         assertNull(StreamResolver.extractMediaUrl("<html><body>nothing here</body></html>", "https://h/p"))
     }
 
-    @Test fun resolve_passesThroughDirectUrlWithoutFetch() {
-        assertEquals("https://h/v.mp4", StreamResolver.resolve("https://h/v.mp4").url)
+    @Test fun resolve_fallsBackToOriginalWhenUnreachable() {
+        // Unresolvable host → best-effort passthrough of the original URL (never throws).
+        val u = "https://nonexistent.invalid/v.mp4"
+        assertEquals(u, StreamResolver.resolve(u).url)
     }
 
-    @Test fun resolve_leavesMagnetAlone() {
-        assertEquals("magnet:?xt=urn:btih:abc", StreamResolver.resolve("magnet:?xt=urn:btih:abc").url)
+    @Test fun resolve_leavesMagnetAloneAndPlayable() {
+        val r = StreamResolver.resolve("magnet:?xt=urn:btih:abc")
+        assertEquals("magnet:?xt=urn:btih:abc", r.url)
+        assertEquals(true, r.playable)
     }
 }

@@ -4,9 +4,11 @@ package com.deekshith.droidserve.tv
 data class DiscoveredServer(
     val name: String,
     val host: String,
-    val port: Int
+    val port: Int,
+    val device: String = ""
 ) {
     val baseUrl: String get() = "http://$host:$port"
+    val displayName: String get() = device.ifEmpty { name }
 }
 
 /** Result of GET /api/info. */
@@ -73,7 +75,9 @@ data class StreamLink(
     val id: String,
     val url: String,
     val label: String,
-    val addedAt: Long
+    val addedAt: Long,
+    /** True = a direct stream (open in a video player); false = a web page (open in a browser). */
+    val playable: Boolean = true
 )
 
 /** A real-time command pushed from the phone (controller) to this TV (player). */
