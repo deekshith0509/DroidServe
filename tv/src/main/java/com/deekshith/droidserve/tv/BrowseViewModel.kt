@@ -444,12 +444,12 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     // (magnet, web pages, third-party stream endpoints) is opened untyped so the OS resolves it by
     // scheme and offers whatever can handle it.
     private fun mimeForUrl(url: String): String {
+        if (url.startsWith("magnet:", ignoreCase = true)) return ""   // torrent apps match the scheme, not a MIME
         val u = url.substringBefore('#').substringBefore('?').lowercase()
-        return when {
-            Regex("\\.(mp4|mkv|webm|avi|mov|m3u8|ts|flv|mpd|m4v|3gp)$").containsMatchIn(u) -> "video/*"
-            Regex("\\.(mp3|flac|aac|ogg|wav|m4a|opus)$").containsMatchIn(u) -> "audio/*"
-            else -> ""
-        }
+        // Streaming / movie links are the common case, so default to video/*. An UNTYPED http URL
+        // only matches browsers (Silk); video/* is what VLC / MX / Kodi register for, so they get
+        // offered. Audio files are typed audio/*; magnet stays untyped for torrent clients.
+        return if (Regex("\\.(mp3|flac|aac|ogg|wav|m4a|opus)$").containsMatchIn(u)) "audio/*" else "video/*"
     }
 
     private fun linksClient(): DroidServeClient {

@@ -373,7 +373,10 @@ class HttpServer(
                     ServerStateHolder.incrementRequests()
                     val url = params["url"]?.firstOrNull()?.trim().orEmpty()
                     if (!isAllowedLink(url)) return errJson(Response.Status.BAD_REQUEST, "Invalid or unsupported URL")
-                    val (v, list) = LinkStore.add(url)
+                    // Resolve watch/embed pages to the direct media URL so the TV's player gets a
+                    // real stream (an HTML page would just bounce the player straight back out).
+                    val r = StreamResolver.resolve(url)
+                    val (v, list) = LinkStore.add(r.url, r.title)
                     return cookie(jsonResponse(ApiJson.links(v, list)))
                 }
                 "api/links/remove" -> {
