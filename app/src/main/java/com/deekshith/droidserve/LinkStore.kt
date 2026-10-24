@@ -15,7 +15,7 @@ import java.io.File
  */
 object LinkStore {
 
-    data class Link(val id: String, val url: String, val label: String, val addedAt: Long)
+    data class Link(val id: String, val url: String, val label: String, val addedAt: Long, val playable: Boolean = true)
 
     private const val CAP = 200
     private val lock = java.lang.Object()
@@ -37,12 +37,12 @@ object LinkStore {
      * Add a pasted URL. Blanks are ignored; an identical URL is de-duplicated (moved to the top).
      * Returns the new snapshot.
      */
-    fun add(url: String, label: String? = null): Pair<Int, List<Link>> = synchronized(lock) {
+    fun add(url: String, label: String? = null, playable: Boolean = true): Pair<Int, List<Link>> = synchronized(lock) {
         val clean = sanitize(url)
         if (clean.isNotEmpty()) {
             links.removeAll { it.url == clean }
             val lbl = sanitize(label.orEmpty()).ifEmpty { sanitize(labelFor(clean)) }.ifEmpty { clean.take(60) }
-            links.add(0, Link(nextId(), clean, lbl, System.currentTimeMillis()))
+            links.add(0, Link(nextId(), clean, lbl, System.currentTimeMillis(), playable))
             while (links.size > CAP) links.removeAt(links.size - 1)
             bump()
         }
@@ -84,7 +84,7 @@ object LinkStore {
     private fun persist() {
         val f = file ?: return
         runCatching {
-            f.writeText(links.joinToString("\n") { "${it.addedAt}\t${it.id}\t${it.url}\t${it.label}" })
+            f.writeText(links.joinToString("\n") { "${it.addedAt}\t${it.id}\t${it.url}\t${it.label}\t${if (it.playable) 1 else 0}" })
         }
     }
 
@@ -93,9 +93,9 @@ object LinkStore {
         runCatching {
             if (!f.exists()) return@runCatching
             for (line in f.readLines()) {
-                val p = line.split('\t', limit = 4)
-                if (p.size == 4) {
-                    links.add(Link(p[1], p[2], p[3], p[0].toLongOrNull() ?: 0L))
+                val p = line.split('\t', limit = 5)
+                if (p.size >= 4) {
+                    links.add(Link(p[1], p[2], p[3], p[0].toLongOrNull() ?: 0L, if (p.size >= 5) p[4] == "1" else true))
                     p[1].substringAfterLast('_').toLongOrNull()?.let { if (it >= counter) counter = it + 1 }
                 }
             }

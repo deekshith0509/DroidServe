@@ -90,7 +90,8 @@ object ApiJson {
             append("{\"id\":\"").append(escape(l.id)).append("\",")
             append("\"url\":\"").append(escape(l.url)).append("\",")
             append("\"label\":\"").append(escape(l.label)).append("\",")
-            append("\"addedAt\":").append(l.addedAt)
+            append("\"addedAt\":").append(l.addedAt).append(',')
+            append("\"playable\":").append(l.playable)
             append('}')
         }
         append("]}")

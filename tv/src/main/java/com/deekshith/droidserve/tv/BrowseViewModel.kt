@@ -232,14 +232,15 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val probe = DroidServeClient(server.baseUrl)
                 val info = withContext(Dispatchers.IO) { probe.fetchInfo() }
+                val enriched = server.copy(device = info.device)
                 if (info.auth) {
-                    promptOrUseSaved(server)
+                    promptOrUseSaved(enriched)
                 } else {
                     client = probe
                     connectedBase = server.baseUrl
                     connectedCreds = "" to null
                     startPollLoop()
-                    openFolder(server, "")
+                    openFolder(enriched, "")
                 }
             } catch (e: AuthException) {
                 // A properly-secured server requires credentials even for /api/info, so the
@@ -435,9 +436,14 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Open a pasted link in a native player — always via the chooser so the user picks VLC/MX/Kodi. */
+    /**
+     * Open a pasted link via the chooser. A resolved direct stream is typed as video/audio so the
+     * native players (VLC/MX/Kodi) are offered; a page we couldn't resolve is left untyped so the
+     * chooser offers a browser (which runs the page's own JS player) instead of bouncing a player.
+     */
     fun onLinkClick(link: StreamLink) {
-        _open.tryEmit(OpenRequest(link.url, mimeForUrl(link.url), forceChooser = true))
+        val mime = if (link.playable) mimeForUrl(link.url) else ""
+        _open.tryEmit(OpenRequest(link.url, mime, forceChooser = true))
     }
 
     // Known media extensions get a typed intent (so players register as handlers); everything else

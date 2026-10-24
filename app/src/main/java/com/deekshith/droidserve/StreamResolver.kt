@@ -17,31 +17,38 @@ import java.net.URL
  */
 object StreamResolver {
 
-    data class Resolved(val url: String, val title: String?)
+    data class Resolved(val url: String, val title: String?, val playable: Boolean)
 
     private const val MAX_HTML = 512 * 1024
     private const val MEDIA_EXT = "m3u8|mpd|mkv|mp4|m4v|webm|ts|mov|avi|flv"
-    private val DIRECT_EXT = Regex("\\.(m3u8|mpd|mkv|mp4|m4v|webm|ts|mov|avi|flv|mp3|flac|aac|ogg|wav|m4a|opus)(\\?|$)", RegexOption.IGNORE_CASE)
 
     fun resolve(url: String): Resolved {
-        if (!url.startsWith("http", ignoreCase = true)) return Resolved(url, null)        // magnet/rtsp → leave alone
-        if (DIRECT_EXT.containsMatchIn(url.substringBefore('#'))) return Resolved(url, null)
+        // magnet/rtsp/etc. are handled by their own apps — leave untouched, treat as playable.
+        if (!url.startsWith("http", ignoreCase = true)) return Resolved(url, null, true)
         return try {
             val conn = open(url)
             try {
+                // Decide by Content-Type, NEVER by file extension: a watch-page URL can itself
+                // contain ".mkv" in its path, so trusting the extension hands an HTML page to the
+                // player (which then bounces straight back out, looking like a crash).
                 val ctype = (conn.contentType ?: "").lowercase()
                 when {
-                    // The URL itself is already a stream — no extraction needed (and don't download it).
                     ctype.startsWith("video/") || ctype.startsWith("audio/") ||
-                        ctype.contains("mpegurl") || ctype.contains("dash+xml") -> Resolved(url, null)
+                        ctype.contains("mpegurl") || ctype.contains("dash+xml") ->
+                        Resolved(url, null, true)                        // already a direct stream
                     ctype.contains("html") || ctype.contains("xml") || ctype.isEmpty() -> {
                         val html = conn.inputStream.use { readCapped(it, MAX_HTML) }
-                        Resolved(extractMediaUrl(html, url) ?: url, extractTitle(html))
+                        val media = extractMediaUrl(html, url)
+                        // Found a real stream → playable. Otherwise keep the page URL but flag it
+                        // non-playable so the TV opens it in a browser (its own JS player) instead
+                        // of bouncing a native player.
+                        if (media != null) Resolved(media, extractTitle(html), true)
+                        else Resolved(url, extractTitle(html), false)
                     }
-                    else -> Resolved(url, null)
+                    else -> Resolved(url, null, true)                    // unknown type — let a player try
                 }
             } finally { conn.disconnect() }
-        } catch (_: Exception) { Resolved(url, null) }
+        } catch (_: Exception) { Resolved(url, null, true) }             // probe failed — best-effort passthrough
     }
 
     /** Pure: pull the most likely direct media URL out of an HTML page. Null if none found. */
