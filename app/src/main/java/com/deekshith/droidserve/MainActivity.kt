@@ -283,6 +283,9 @@ fun DroidServeApp() {
                 }
             }
 
+            // ── Send a link to the TV (no web UI needed) ─────────────────────────
+            SendToTvCard(isRunning, snackbar, scope)
+
             // ── Settings (port + auth) ───────────────────────────────────────────
             SectionCard("⚙️ Settings") {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -533,6 +536,84 @@ private fun LiveLogCard(entries: List<ServerLog.Entry>, onClear: () -> Unit) {
                             Text("${e.ms}ms", fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
                         }
                         Text(e.client, fontFamily = FontFamily.Monospace, fontSize = 9.sp, color = MaterialTheme.colorScheme.outline)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Send a link to the TV (native paste; same relay the web UI uses) ───────────
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SendToTvCard(isRunning: Boolean, snackbar: SnackbarHostState, scope: kotlinx.coroutines.CoroutineScope) {
+    val context = LocalContext.current
+    var urlText by remember { mutableStateOf("") }
+    var sending by remember { mutableStateOf(false) }
+    var refresh by remember { mutableStateOf(0) }
+    val links = remember(refresh) { LinkStore.snapshot().second }
+
+    fun send() {
+        val u = urlText.trim()
+        if (u.isEmpty() || sending) return
+        sending = true
+        scope.launch {
+            val res = withContext(Dispatchers.IO) {
+                val r = StreamResolver.resolve(u)
+                LinkStore.add(r.url, r.title, r.playable)
+                r
+            }
+            urlText = ""; sending = false; refresh++
+            snackbar.showSnackbar(if (res.playable) "Sent to TV ✓" else "Added — opens in a browser on the TV")
+        }
+    }
+
+    SectionCard("📡 Send a link to the TV") {
+        OutlinedTextField(
+            value = urlText,
+            onValueChange = { urlText = it },
+            label = { Text("Paste a video / stream URL") },
+            singleLine = true, enabled = !sending,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            trailingIcon = {
+                IconButton(onClick = {
+                    val clip = (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                        .primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+                    if (clip.isNotBlank()) urlText = clip.trim()
+                }) { Icon(Icons.Default.ContentPaste, contentDescription = "Paste from clipboard") }
+            },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = { send() }, enabled = urlText.isNotBlank() && !sending,
+            modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp)
+        ) {
+            if (sending) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                Spacer(Modifier.width(8.dp)); Text("Sending…")
+            } else {
+                Icon(Icons.Default.Cast, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Send to TV")
+            }
+        }
+        Text(
+            if (isRunning) "Also: Share a link from any app → DroidServe → TV."
+            else "Start the server so your TV can receive these (Share from any app works too).",
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline,
+            modifier = Modifier.padding(top = 6.dp)
+        )
+        if (links.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Text("On the TV (${links.size})", style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            links.take(5).forEach { l ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.PlayCircle, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.outline)
+                    Spacer(Modifier.width(8.dp))
+                    Text(l.label, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                    IconButton(onClick = { LinkStore.remove(l.id); refresh++ }, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Close, "Remove", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.outline)
                     }
                 }
             }
