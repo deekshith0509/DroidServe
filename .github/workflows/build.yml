@@ -23,6 +23,10 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Override the action's default ("tools platform-tools"): the legacy `tools` package was
+          # removed from Google's repo and fails SDK setup. AGP auto-downloads platforms/build-tools.
+          packages: platform-tools
 
       - name: Make gradlew executable
         run: chmod +x gradlew
