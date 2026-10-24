@@ -68,6 +68,14 @@ data class MusicAlbum(
     val songs: List<RemoteEntry>
 )
 
+/** One external streaming link the phone pushed to this TV (opened on demand in a native player). */
+data class StreamLink(
+    val id: String,
+    val url: String,
+    val label: String,
+    val addedAt: Long
+)
+
 /** A real-time command pushed from the phone (controller) to this TV (player). */
 data class CastCommand(
     val action: String,

@@ -82,6 +82,20 @@ object ApiJson {
         }
     }
 
+    /** Serialize the external-links list (version + newest-first links) for the web UI and TV. */
+    fun links(version: Int, links: List<LinkStore.Link>): String = buildString {
+        append("{\"version\":").append(version).append(",\"links\":[")
+        for ((i, l) in links.withIndex()) {
+            if (i > 0) append(',')
+            append("{\"id\":\"").append(escape(l.id)).append("\",")
+            append("\"url\":\"").append(escape(l.url)).append("\",")
+            append("\"label\":\"").append(escape(l.label)).append("\",")
+            append("\"addedAt\":").append(l.addedAt)
+            append('}')
+        }
+        append("]}")
+    }
+
     /** Serialize a cast command for the TV long-poll response. */
     fun castCommand(action: String, url: String, mime: String, subUrl: String? = null): String = buildString {
         append('{')

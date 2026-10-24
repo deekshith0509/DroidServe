@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -107,20 +108,23 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            if (lastCrash != null) {
-                CrashScreen(lastCrash)
+            var crash by remember { mutableStateOf(lastCrash) }
+            val c = crash
+            if (c != null) {
+                CrashScreen(c) { crash = null }
             } else {
                 val screen by vm.screen.collectAsStateWithLifecycle()
                 Box(Modifier.fillMaxSize().background(BG)) {
                     when (val s = screen) {
                         is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual, vm::rescan)
                         is UiScreen.Auth -> AuthScreen(s, vm::submitAuth, vm::forgetSaved)
-                        is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort, vm::clearCastToast, vm::toggleView, vm::openMusic)
+                        is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort, vm::clearCastToast, vm::toggleView, vm::openMusic, vm::openLinks) { vm.openFolder(s.server, s.path) }
                         is UiScreen.Viewer -> ViewerScreen(s)
                         is UiScreen.AudioPlayer -> AudioPlayerScreen(s, vm::audioPrev, vm::audioNext, vm::audioCompleted)
                         is UiScreen.ApkInstall -> ApkInstallScreen(s, vm::installReady)
                         is UiScreen.MusicLibrary -> MusicLibraryScreen(s, vm::openAlbum, vm::setMusicFilter)
                         is UiScreen.AlbumSongs -> AlbumSongsScreen(s, vm::playSong)
+                        is UiScreen.Links -> LinksScreen(s, vm::onLinkClick)
                     }
                 }
             }
@@ -136,10 +140,13 @@ class MainActivity : ComponentActivity() {
      * (VLC, MX) start there and report the stop position back, which we persist for next time.
      */
     private fun openInDefaultApp(req: OpenRequest) {
-        val mime = req.mime.ifBlank { "*/*" }
         val isVideo = req.mime.startsWith("video/")
+        val uri = Uri.parse(req.url)
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(Uri.parse(req.url), mime)
+            // A blank MIME (arbitrary pasted links: magnet / web page / third-party endpoint) is
+            // opened untyped so the OS resolves it by scheme and offers the right app. Known media
+            // keeps its type so players register as handlers.
+            if (req.mime.isBlank()) setData(uri) else setDataAndType(uri, req.mime)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             // Pass a sidecar subtitle track to players that understand it. VLC and MX Player read
             // these extras; players that don't simply ignore them, so it's always safe to include.
@@ -154,9 +161,19 @@ class MainActivity : ComponentActivity() {
             if (req.resumeMs > 0) {
                 putExtra("position", req.resumeMs.toLong())       // VLC
                 putExtra("return_result", true)                  // MX: ask it to report back
-            } else if (isVideo) {
+            } else if (isVideo && !req.forceChooser) {
                 putExtra("return_result", true)
             }
+        }
+        // Pasted links: always offer the chooser so the user picks their player (VLC / MX / Kodi /
+        // browser), and don't wait for a result — these aren't tracked for resume.
+        if (req.forceChooser) {
+            try {
+                startActivity(Intent.createChooser(intent, "Open with").apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+            } catch (e: Exception) {
+                Toast.makeText(this, "No app can open this link", Toast.LENGTH_LONG).show()
+            }
+            return
         }
         lastVideoUrl = if (isVideo) req.url else null
         try {
@@ -222,16 +239,22 @@ class MainActivity : ComponentActivity() {
 
 // ── Crash reporter ────────────────────────────────────────────────────────
 @Composable
-private fun CrashScreen(trace: String) {
+private fun CrashScreen(trace: String, onContinue: () -> Unit) {
+    val continueFocus = remember { FocusRequester() }
     Column(
         Modifier.fillMaxSize().background(BG).padding(24.dp)
             .verticalScroll(rememberScrollState())
     ) {
         Text("⚠️ DroidServe TV crashed last time", color = ERR, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
-        Text("Please share this with the developer, then reopen the app:", color = MUTED, fontSize = 13.sp)
+        Text("Share this with the developer, or continue to the app:", color = MUTED, fontSize = 13.sp)
         Spacer(Modifier.height(12.dp))
+        FocusableChip("Continue →", Modifier.focusRequester(continueFocus)) { onContinue() }
+        Spacer(Modifier.height(16.dp))
         Text(trace, color = TEXT, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+    }
+    LaunchedEffect(Unit) {
+        repeat(10) { if (runCatching { continueFocus.requestFocus() }.isSuccess) return@LaunchedEffect; kotlinx.coroutines.delay(60) }
     }
 }
 
@@ -398,11 +421,19 @@ private fun RemoteImage(url: String) {
     LaunchedEffect(url) {
         val result = withContext(kotlinx.coroutines.Dispatchers.IO) {
             runCatching {
-                val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+                fun openStream() = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
                     connectTimeout = 5000; readTimeout = 10000
                 }
-                try { conn.inputStream.use { android.graphics.BitmapFactory.decodeStream(it) } }
-                finally { conn.disconnect() }
+                // Pass 1: read dimensions only (cheap — just the header), so a 48MP original can't
+                // allocate a ~200MB bitmap and OOM-crash a low-RAM TV box.
+                val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                openStream().let { c -> try { c.inputStream.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) } } finally { c.disconnect() } }
+                // Pass 2: decode downsampled to roughly the display size.
+                val opts = android.graphics.BitmapFactory.Options().apply {
+                    inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, 2560)
+                    inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+                }
+                openStream().let { c -> try { c.inputStream.use { android.graphics.BitmapFactory.decodeStream(it, null, opts) } } finally { c.disconnect() } }
             }.getOrNull()
         }
         if (result != null) bmp = result else failed = true
@@ -475,6 +506,11 @@ private fun AudioPlayerScreen(
             Text("Couldn't play this file", color = ERR, fontSize = 15.sp)
         } else {
             Text("${fmtTime(positionMs)}  /  ${fmtTime(durationMs)}", color = ACCENT, fontFamily = FontFamily.Monospace, fontSize = 15.sp)
+            Spacer(Modifier.height(10.dp))
+            val frac = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+            Box(Modifier.fillMaxWidth(0.6f).height(4.dp).clip(RoundedCornerShape(2.dp)).background(BORDER)) {
+                Box(Modifier.fillMaxWidth(frac).fillMaxHeight().background(ACCENT))
+            }
         }
         Spacer(Modifier.height(20.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -506,7 +542,9 @@ private fun BrowseScreen(
     onSort: (SortMode) -> Unit,
     onClearCast: () -> Unit,
     onToggleView: () -> Unit,
-    onMusic: () -> Unit
+    onMusic: () -> Unit,
+    onLinks: () -> Unit,
+    onRetry: () -> Unit
 ) {
     val firstItemFocus = remember { FocusRequester() }
     // Search is opt-in: on a 10-foot D-pad UI an always-on text field would grab initial
@@ -532,6 +570,8 @@ private fun BrowseScreen(
             SortChip(if (state.gridMode) "☰ List" else "⊞ Grid", false) { onToggleView() }
             Spacer(Modifier.width(8.dp))
             SortChip("🎵 Music", false) { onMusic() }
+            Spacer(Modifier.width(8.dp))
+            SortChip("🔗 Links", false) { onLinks() }
         }
         if (searchOpen) {
             Spacer(Modifier.height(8.dp))
@@ -551,7 +591,17 @@ private fun BrowseScreen(
 
         when {
             state.loading -> CircularProgressIndicator(color = ACCENT)
-            state.error != null -> Text("Error: ${state.error}", color = ERR, fontSize = 16.sp)
+            state.error != null -> {
+                val retryFocus = remember { FocusRequester() }
+                Column {
+                    Text("Error: ${state.error}", color = ERR, fontSize = 16.sp)
+                    Spacer(Modifier.height(14.dp))
+                    FocusableChip("🔄 Retry", Modifier.focusRequester(retryFocus)) { onRetry() }
+                }
+                LaunchedEffect(state.error) {
+                    repeat(10) { if (runCatching { retryFocus.requestFocus() }.isSuccess) return@LaunchedEffect; kotlinx.coroutines.delay(60) }
+                }
+            }
             state.entries.isEmpty() ->
                 Text(if (state.total == 0) "Empty folder" else "No items match your filter.",
                     color = MUTED, fontSize = 15.sp)
@@ -736,6 +786,59 @@ private fun AlbumSongsScreen(state: UiScreen.AlbumSongs, onPlay: (MusicAlbum, In
     }
 }
 
+// ── Streaming links ──────────────────────────────────────────────────────────
+@Composable
+private fun LinksScreen(state: UiScreen.Links, onOpen: (StreamLink) -> Unit) {
+    val firstFocus = remember { FocusRequester() }
+    Column(Modifier.fillMaxSize().padding(horizontal = 40.dp, vertical = 24.dp)) {
+        Text("🔗 Streaming Links", color = ACCENT, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Text("${state.links.size} links · paste more from the DroidServe web UI on your phone",
+            color = MUTED, fontSize = 13.sp)
+        Spacer(Modifier.height(12.dp))
+        when {
+            state.loading -> CircularProgressIndicator(color = ACCENT)
+            state.error != null -> Text("Error: ${state.error}", color = ERR, fontSize = 15.sp)
+            state.links.isEmpty() -> Text(
+                "No links yet. Open DroidServe on your phone, tap 🔗, and paste a video or stream URL — it appears here instantly.",
+                color = MUTED, fontSize = 15.sp
+            )
+            else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(state.links.size, key = { state.links[it].id }) { i ->
+                    val l = state.links[i]
+                    val mod = if (i == 0) Modifier.focusRequester(firstFocus) else Modifier
+                    FocusableRow(onClick = { onOpen(l) }, extraModifier = mod) {
+                        Text(linkIcon(l.url), fontSize = 22.sp)
+                        Spacer(Modifier.width(16.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(l.label, color = TEXT, fontSize = 17.sp, maxLines = 1)
+                            Text(l.url, color = MUTED, fontSize = 12.sp, maxLines = 1)
+                        }
+                        Text("▶", color = MUTED, fontSize = 18.sp)
+                    }
+                }
+            }
+        }
+    }
+    LaunchedEffect(state.links.size) {
+        if (state.links.isNotEmpty())
+            repeat(10) { if (runCatching { firstFocus.requestFocus() }.isSuccess) return@LaunchedEffect; kotlinx.coroutines.delay(60) }
+    }
+}
+
+private fun linkIcon(u: String): String = when {
+    u.startsWith("magnet:", ignoreCase = true) -> "🧲"
+    Regex("\\.(mp3|flac|aac|ogg|wav|m4a|opus)(\\?|$)", RegexOption.IGNORE_CASE).containsMatchIn(u) -> "🎵"
+    else -> "🎬"
+}
+
+// Power-of-two downsample factor so a decoded image lands near [target] px on its longest edge.
+private fun sampleSize(w: Int, h: Int, target: Int): Int {
+    if (w <= 0 || h <= 0) return 1
+    var s = 1
+    while (w / (s * 2) >= target || h / (s * 2) >= target) s *= 2
+    return s
+}
+
 // Thumbnail tile: paints the cached bitmap instantly, else loads off-main and falls back to the
 // type emoji. No image library — same HttpURLConnection + BitmapFactory path as the image viewer.
 @Composable
@@ -826,12 +929,12 @@ private fun SortChip(label: String, active: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun FocusableChip(label: String, onClick: () -> Unit) {
+private fun FocusableChip(label: String, extraModifier: Modifier = Modifier, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     Text(
         label, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold,
-        modifier = Modifier
+        modifier = extraModifier
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             .background(if (focused) Color(0xFF0EA5E9) else ACCENT, RoundedCornerShape(8.dp))
             .border(if (focused) 3.dp else 0.dp, Color.White, RoundedCornerShape(8.dp))

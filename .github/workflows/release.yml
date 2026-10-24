@@ -50,15 +50,17 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build APKs (phone + TV)
-        run: ./gradlew assembleDebug --stacktrace
+      - name: Build minified release APKs (phone + TV)
+        # R8-minified release builds. Signed with the debug key here (no keystore secret in CI);
+        # still installable for sideloading. Drop in a keystore for store distribution.
+        run: ./gradlew assembleRelease --stacktrace
 
       - name: Stage APKs with release names
         run: |
           mkdir -p release-out
           repo="${{ github.event.repository.name }}"
-          cp app/build/outputs/apk/debug/*.apk "release-out/${repo}-phone-${TAG}.apk"
-          cp tv/build/outputs/apk/debug/*.apk  "release-out/${repo}-tv-${TAG}.apk"
+          cp app/build/outputs/apk/release/*.apk "release-out/${repo}-phone-${TAG}.apk"
+          cp tv/build/outputs/apk/release/*.apk  "release-out/${repo}-tv-${TAG}.apk"
           ls -lh release-out
 
       - name: Publish GitHub Release
