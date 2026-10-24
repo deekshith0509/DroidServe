@@ -38,6 +38,8 @@ No internet connection required. No data leaves your local network. No accounts.
 | **Inline preview** | Images, PDFs, text, code, and extensionless files render directly in the browser |
 | **Thumbnails & gallery** | Server-rendered image/video thumbnails, a grid/gallery view (toggle, remembered per device), duration/resolution badges, and an in-browser image lightbox — prev/next, zoom, slideshow, swipe, EXIF |
 | **Download anything** | Every file row has a ⬇ download button; folders download as ZIP |
+| **Music library** | A dedicated 🎵 tab: folder-grouped albums, lazy cover art, search, a folder playlist, and FLAC streaming — in the web UI and on the TV |
+| **Send links to the TV** | Paste any video/stream URL on the phone (native field, the Share sheet from any app, or the web 🔗 tab) — DroidServe resolves watch/embed pages to the **direct stream** and it appears on the TV instantly to open in VLC/MX/Kodi |
 | **TV & remote friendly** | Arrow-key spatial navigation, visible focus rings, and overscan padding for Android TV / D-pad browsers |
 | **Reliable in background** | Foreground service + CPU/Wi-Fi locks + silent keep-alive defeat aggressive OEM freezers (Transsion XOS, MIUI, etc.) so transfers never stall |
 | **QR code** | Auto-generated QR — point another phone's camera to connect instantly |
@@ -69,6 +71,8 @@ it automatically.
 | **Resume video** | The TV remembers where each video stopped and asks the player to resume there; the resume cache self-prunes if it grows past 100 KB |
 | **Subtitles** | Sidecar `.srt`/`.vtt` next to a video are handed to the external player (VLC/MX subtitle extras) |
 | **Play on TV (cast)** | Tap 📺 on any video/audio row in the phone web UI; the phone pushes the stream (and any subtitle) to the TV app, which opens it in the native player. The phone becomes the remote |
+| **Streaming links (🔗)** | A **Links** screen shows URLs pushed from the phone in real time (long-poll); pick one with the remote to open — direct streams go to your video player, unresolved web pages open in a browser so nothing dead-ends |
+| **Music library (🎵)** | A searchable, folder-grouped albums grid with in-app playback (native `MediaPlayer`, folder playlist, live position) |
 | **Auth aware** | Password-protected servers prompt for credentials, **remember the password per server** (auto-reconnect next time, re-prompt only if it changed), and stream tokenized media URLs to external players without re-sending the header |
 | **Android 5.0+** | Runs on old TVs (min SDK 21) |
 
@@ -82,6 +86,22 @@ cleanly (no leak into a permanent high-power state).
 # Build/install the TV app on an Android TV (adb over USB or network)
 ./gradlew :tv:installDebug
 ```
+
+---
+
+## Streaming Links (phone → TV)
+
+Send a web video to the TV without typing anything on the remote. Three ways to add a link on the phone:
+
+- **In-app** — the **📡 Send a link to the TV** card on the main screen: paste (or tap the clipboard icon) and **Send to TV**.
+- **Share sheet** — in any app (a browser, a video app, a messenger), **Share → DroidServe → TV**. No need to open DroidServe at all.
+- **Web UI** — the **🔗** tab in the browser file UI.
+
+Each link is pushed to the TV's **🔗 Links** screen in real time (a long-poll channel, persisted so it survives restarts). Pick one with the remote and it opens in your player.
+
+**Smart resolving.** Most "watch"/embed links are an HTML page, not a direct stream — handing that to a video player just bounces straight back out. DroidServe fetches the page once and extracts the real media URL (the player's `<source>`/`<video>`, an `og:video` tag, or an HLS/MP4 embed config), so the TV gets something VLC/MX/Kodi can actually stream. The decision is made by the response **`Content-Type`**, never the file extension (a watch-page URL can itself contain `.mkv`). If a page genuinely can't be resolved, the link is flagged as a page and opens in a **browser** instead — so no link type dead-ends. Direct URLs and `magnet:` links pass through untouched.
+
+> Generic and best-effort by design — it is not a per-site scraper (no DRM/obfuscated-player extraction). The server must be running for the TV to receive links.
 
 ---
 
@@ -143,9 +163,13 @@ app/src/main/java/com/deekshith/droidserve/     # Phone server
 │                            #   .m3u + .vtt endpoints, network-change IP refresh
 │   ├── DirectoryCache       # TTL-LRU cache for SAF listings
 │   └── FileEntry            # Lightweight SAF record (replaces DocumentFile)
-├── FileUtils.kt             # MIME, HTML builder + in-browser player, SRT→VTT
+├── FileUtils.kt             # MIME, HTML builder + in-browser player + 🔗/🎵 tabs, SRT→VTT
 ├── ApiJson.kt               # Hand-rolled JSON for the /api/* native-client API
-├── CastQueue.kt             # Real-time phone→TV cast channel
+├── CastQueue.kt             # Real-time phone→TV cast channel (library "Play on TV")
+├── LinkStore.kt             # Persisted, versioned streaming-links list + long-poll
+├── StreamResolver.kt        # Resolves watch/embed pages to a direct media URL
+├── ShareActivity.kt         # Share-sheet target ("Share → DroidServe → TV")
+├── App.kt                   # Application — attaches LinkStore at process start
 ├── NsdAdvertiser.kt         # mDNS/NSD advertising (_droidserve._tcp)
 ├── NetworkUtils.kt          # Local IP detection (multi-interface fallback)
 ├── ServerStateHolder.kt     # Shared reactive state (StateFlow + AtomicInteger)
@@ -161,7 +185,7 @@ tv/src/main/java/com/deekshith/droidserve/tv/    # Android TV companion
 ├── SubnetScanner.kt         # Polite subnet-probe fallback when mDNS is blocked
 ├── CredentialStore.kt       # Per-server remembered passwords
 ├── PlaybackStore.kt         # Video resume positions (100 KB self-pruning cache)
-├── Models.kt                # DiscoveredServer / RemoteEntry / ServerInfo / CastCommand
+├── Models.kt                # DiscoveredServer / RemoteEntry / ServerInfo / CastCommand / StreamLink
 └── App.kt                   # Global crash-to-file handler
 ```
 
@@ -173,7 +197,7 @@ tv/src/main/java/com/deekshith/droidserve/tv/    # Android TV companion
 
 ```bash
 # Clone the repo
-git clone https://github.com/deekshith/DroidServe.git
+git clone https://github.com/deekshith0509/DroidServe.git
 cd DroidServe
 
 # Build and install (connected device or emulator)
@@ -226,6 +250,16 @@ dependencies {
 - **Click ⬇ ZIP** on a folder → downloads entire folder as a `.zip`
 - **Subtitles** → drop a `movie.srt` (or `movie.en.srt`) next to `movie.mp4`; it appears as a subtitle track in the player
 - **On a TV / with a remote** → use the arrow keys to move between items and press OK to open
+
+### Sending a link to the TV
+
+With the TV app connected to the phone, push a web video to it without typing on the remote:
+
+1. On the phone, use the **📡 Send a link to the TV** card (paste or tap the clipboard icon → **Send to TV**), **or** Share a link from any app → **DroidServe → TV**, **or** the **🔗** tab in the web UI
+2. On the TV, open the **🔗 Links** screen — the link appears instantly
+3. Press **OK** to open it; direct streams go to your video player (VLC/MX/Kodi), web pages open in a browser
+
+Watch/embed pages are resolved to their direct stream automatically. The server must be running for the TV to receive links.
 
 ### Password Protection
 
