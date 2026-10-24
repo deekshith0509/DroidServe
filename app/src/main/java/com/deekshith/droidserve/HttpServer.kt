@@ -118,6 +118,9 @@ class HttpServer(
         private val INLINE_PREFIXES = arrayOf("image/", "video/", "audio/", "text/")
         private const val INLINE_PDF = "application/pdf"
 
+        // Schemes accepted by the phone -> TV streaming-links relay.
+        private val LINK_SCHEME = Regex("^(https?|rtsps?|rtmps?|mms|ftp|magnet):", RegexOption.IGNORE_CASE)
+
         // SAF projection — declared once, reused everywhere
         private val SAF_PROJECTION = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -152,7 +155,13 @@ class HttpServer(
     private val thumbGen: ThumbGen = AndroidThumbGen(context)
     private val thumbSem = Semaphore(3)                              // cap concurrent native decoders
     private val thumbLocks = ConcurrentHashMap<String, Any>()       // de-dup identical in-flight renders
-    private val metaCache = ConcurrentHashMap<String, MediaMeta>()  // avoid re-probing for badges
+    // Bounded LRU (access-order) so hot files stay cached and eviction is graceful — no 512-entry
+    // cliff where a single overflow wipes the whole cache.
+    private val metaCache = Collections.synchronizedMap(
+        object : LinkedHashMap<String, MediaMeta>(128, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MediaMeta>): Boolean = size > 256
+        }
+    )
 
     // Active ZIP producer threads run OUTSIDE the request pool, so stop() must track and
     // interrupt them explicitly — otherwise a large in-progress archive keeps reading SAF
@@ -177,6 +186,7 @@ class HttpServer(
 
     init {
         runCatching { thumbCache.prune() }   // reclaim stale thumbnails once per server start
+        runCatching { LinkStore.attach(File(context.filesDir, "links.tsv")) }   // load persisted stream links
         setAsyncRunner(object : AsyncRunner {
             private val running: MutableSet<ClientHandler> =
                 Collections.synchronizedSet(mutableSetOf())
@@ -340,6 +350,50 @@ class HttpServer(
                 newFixedLengthResponse(Response.Status.NO_CONTENT, "application/json", "").also { cors(it) }
             } else {
                 jsonResponse(ApiJson.castCommand(cmd.action, cmd.url, cmd.mime, cmd.subUrl))
+            }
+        }
+
+        // ── External streaming links: phone pastes URLs → TV collects them in a live list ──
+        // /api/links         full list (version + links)      /api/links/add?url=…   push a URL
+        // /api/links/remove?id=…   drop one   /api/links/clear   drop all
+        // /api/links/poll?since=<v>   long-poll for the next change (realtime web UI + TV updates)
+        if (path.startsWith("api/links")) {
+            fun cookie(r: Response) = r.also {
+                if (needsCookie) it.addHeader(
+                    "Set-Cookie", "$COOKIE_NAME=$sessionToken; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
+                )
+            }
+            when (path) {
+                "api/links" -> {
+                    ServerStateHolder.incrementRequests()
+                    val (v, list) = LinkStore.snapshot()
+                    return cookie(jsonResponse(ApiJson.links(v, list)))
+                }
+                "api/links/add" -> {
+                    ServerStateHolder.incrementRequests()
+                    val url = params["url"]?.firstOrNull()?.trim().orEmpty()
+                    if (!isAllowedLink(url)) return errJson(Response.Status.BAD_REQUEST, "Invalid or unsupported URL")
+                    val (v, list) = LinkStore.add(url)
+                    return cookie(jsonResponse(ApiJson.links(v, list)))
+                }
+                "api/links/remove" -> {
+                    ServerStateHolder.incrementRequests()
+                    val (v, list) = LinkStore.remove(params["id"]?.firstOrNull().orEmpty())
+                    return cookie(jsonResponse(ApiJson.links(v, list)))
+                }
+                "api/links/clear" -> {
+                    ServerStateHolder.incrementRequests()
+                    val (v, list) = LinkStore.clear()
+                    return cookie(jsonResponse(ApiJson.links(v, list)))
+                }
+                "api/links/poll" -> {
+                    // Like tv/poll: a long-poll that must NOT count as activity (would defeat auto-stop).
+                    val since = params["since"]?.firstOrNull()?.toIntOrNull() ?: -1
+                    val (v, list) = LinkStore.awaitChange(since, 25_000L)
+                    return if (v == since)
+                        newFixedLengthResponse(Response.Status.NO_CONTENT, "application/json", "").also { cors(it) }
+                    else cookie(jsonResponse(ApiJson.links(v, list)))
+                }
             }
         }
 
@@ -515,9 +569,21 @@ class HttpServer(
         facts.add("Requests served" to ServerStateHolder.requestCount.value.toString())
         facts.add("Uptime" to Diagnostics.formatUptime(SystemClock.elapsedRealtime() - ServerStateHolder.startedAtElapsed))
         facts.add("Device" to "${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-        val ips = NetworkUtils.allIpv4().joinToString(", ") { "${it.first}=${it.second}" }
+        val ips = cachedInterfaces()
         if (ips.isNotEmpty()) facts.add("Interfaces" to ips)
         return facts
+    }
+
+    // Enumerating every NIC on each folder render is wasteful; the interface set changes rarely,
+    // so memoize it for a few seconds.
+    @Volatile private var ifaceCache: String = ""
+    @Volatile private var ifaceCacheAt = 0L
+    private fun cachedInterfaces(): String {
+        val now = SystemClock.elapsedRealtime()
+        if (ifaceCacheAt != 0L && now - ifaceCacheAt < 5_000L) return ifaceCache
+        ifaceCache = NetworkUtils.allIpv4().joinToString(", ") { "${it.first}=${it.second}" }
+        ifaceCacheAt = now
+        return ifaceCache
     }
 
     // -----------------------------------------------------------------------
@@ -579,6 +645,11 @@ class HttpServer(
         newFixedLengthResponse(Response.Status.OK, "application/json; charset=utf-8", body)
             .also { cors(it); it.addHeader("Cache-Control", "no-store") }
 
+    // Accept only URLs a media player / torrent client / browser can actually open. Keeps the
+    // relay from being turned into a store for arbitrary junk, without trying to validate reach.
+    private fun isAllowedLink(url: String): Boolean =
+        url.isNotEmpty() && LINK_SCHEME.containsMatchIn(url)
+
     // Allowed thumbnail widths — bounds the number of cached variants per file.
     private fun clampThumbW(raw: String?): Int = when (raw?.toIntOrNull()) {
         160 -> 160; 480 -> 480; else -> 320
@@ -632,11 +703,26 @@ class HttpServer(
     private fun noThumb(): Response =
         newFixedLengthResponse(Response.Status.NO_CONTENT, "image/webp", "").also { cors(it) }
 
+    private val HTTP_DATE_FMT = java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", java.util.Locale.US)
+        .apply { timeZone = java.util.TimeZone.getTimeZone("GMT") }
+    private fun httpDate(ms: Long): String = synchronized(HTTP_DATE_FMT) { HTTP_DATE_FMT.format(java.util.Date(ms)) }
+
+    // Revalidation headers so a browser caches file bytes and gets a cheap 304 on re-fetch instead
+    // of re-downloading. `must-revalidate` keeps it honest — the ETag is always re-checked.
+    private fun cacheValidators(r: Response, etag: String, lastModified: Long): Response = r.also {
+        it.addHeader("ETag", etag)
+        if (lastModified > 0) it.addHeader("Last-Modified", httpDate(lastModified))
+        it.addHeader("Cache-Control", "private, max-age=0, must-revalidate")
+    }
+
+    private fun notModified(etag: String, lastModified: Long): Response =
+        newFixedLengthResponse(Response.Status.NOT_MODIFIED, "text/plain", "")
+            .also { cacheValidators(it, etag, lastModified); cors(it) }
+
     // Media facts for badges / lightbox. Cached per (file, mtime, size) so a video is probed once.
     private fun metaResponse(entry: FileEntry): Response {
         val cacheKey = "${entry.docId}:${entry.lastModified}:${entry.size}"
         val m = metaCache[cacheKey] ?: run {
-            if (metaCache.size > 512) metaCache.clear()   // soft bound
             val computed = thumbGen.meta(entry.uri, FileUtils.getMimeType(entry.name)) ?: MediaMeta()
             metaCache[cacheKey] = computed
             computed
@@ -729,6 +815,11 @@ class HttpServer(
         val mime = FileUtils.getMimeType(entry.name)
         val disp = disposition(entry.name, mime, forceDownload)
 
+        // Browser caching: a stable validator (mtime+size) lets a re-fetch of the same bytes
+        // (lightbox re-open, revisiting a folder) short-circuit to 304 instead of re-downloading.
+        val etag = "\"${entry.lastModified.toString(16)}-${entry.size.toString(16)}\""
+        if (session.headers["if-none-match"] == etag) return notModified(etag, entry.lastModified)
+
         // Open the descriptor once. statSize is authoritative; the cached SAF size may be 0
         // (some providers don't report it) or stale — trusting it would truncate the download.
         val pfd = try { context.contentResolver.openFileDescriptor(entry.uri, "r") }
@@ -745,6 +836,7 @@ class HttpServer(
             return newFixedLengthResponse(Response.Status.OK, mime, ByteArrayInputStream(ByteArray(0)), size).also {
                 it.addHeader("Accept-Ranges", "bytes")
                 it.addHeader("Content-Disposition", disp)
+                cacheValidators(it, etag, entry.lastModified)
                 cors(it)
             }
         }
@@ -778,22 +870,23 @@ class HttpServer(
                     it.addHeader("Content-Range", "bytes $start-$end/$size")
                     it.addHeader("Content-Disposition", disp)
                     it.addHeader("Accept-Ranges", "bytes")
-                    it.addHeader("Cache-Control", "no-store")
+                    cacheValidators(it, etag, entry.lastModified)
                     cors(it)
                 }
             }
             return newFixedLengthResponse(Response.Status.OK, mime, stream, size).also {
                 it.addHeader("Content-Disposition", disp)
                 it.addHeader("Accept-Ranges", "bytes")
-                it.addHeader("Cache-Control", "no-store")
+                cacheValidators(it, etag, entry.lastModified)
                 cors(it)
             }
         }
 
         // Single range only — ignore multi-range ("bytes=a-b,c-d") and serve the whole file (200)
         val range = session.headers["range"]?.takeUnless { it.contains(',') }
-        return if (range != null) rangedResponse(pfd, mime, size, range, disp)
-               else               fullResponse(pfd, mime, size, disp)
+        val resp = if (range != null) rangedResponse(pfd, mime, size, range, disp)
+                   else               fullResponse(pfd, mime, size, disp)
+        return cacheValidators(resp, etag, entry.lastModified)
     }
 
     // openFileDescriptor + FileInputStream hits the OS page cache directly,
@@ -803,7 +896,6 @@ class HttpServer(
         return newFixedLengthResponse(Response.Status.OK, mime, AutoCloseStream(stream, pfd), size).also {
             it.addHeader("Content-Disposition", disp)
             it.addHeader("Accept-Ranges", "bytes")
-            it.addHeader("Cache-Control", "no-store")
             cors(it)
         }
     }
@@ -839,7 +931,6 @@ class HttpServer(
             it.addHeader("Content-Range", "bytes $start-$end/$size")
             it.addHeader("Accept-Ranges", "bytes")
             it.addHeader("Content-Disposition", disp)
-            it.addHeader("Cache-Control", "no-store")
             cors(it)
         }
     }

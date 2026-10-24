@@ -27,7 +27,9 @@ data class OpenRequest(
     val mime: String,
     val subUrl: String? = null,
     /** Resume position in ms to hand the external player, or 0 to start from the beginning. */
-    val resumeMs: Int = 0
+    val resumeMs: Int = 0,
+    /** Always show the "Open with" chooser (used for pasted links so the user picks their player). */
+    val forceChooser: Boolean = false
 )
 
 /** The screen the UI is currently showing. */
@@ -129,6 +131,17 @@ sealed interface UiScreen {
         val server: DiscoveredServer,
         val album: MusicAlbum
     ) : UiScreen
+
+    /**
+     * Streaming links the phone pushed. Updated live via long-poll; the user picks one with the
+     * remote to open in an external player. We never auto-launch — the list is the whole point.
+     */
+    data class Links(
+        val server: DiscoveredServer,
+        val links: List<StreamLink>,
+        val loading: Boolean = false,
+        val error: String? = null
+    ) : UiScreen
 }
 
 class BrowseViewModel(app: Application) : AndroidViewModel(app) {
@@ -159,6 +172,9 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private var rawEntries: List<RemoteEntry> = emptyList()
     private var currentPath: String = ""     // last opened folder, so the viewer can return to it
     private var pollJob: Job? = null
+    private var linksJob: Job? = null
+    private var streamLinks: List<StreamLink> = emptyList()
+    private var linkVersion = -1
     private var connectedBase: String? = null
     private var connectedCreds: Pair<String, String?>? = null
 
@@ -403,6 +419,71 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         _screen.value = UiScreen.AudioPlayer(server, album.songs, index)
     }
 
+    // ── Streaming links ────────────────────────────────────────────────────
+    fun openLinks() {
+        val server = (_screen.value as? UiScreen.Browse)?.server ?: return
+        _screen.value = UiScreen.Links(server, streamLinks, loading = streamLinks.isEmpty() && linkVersion < 0)
+        // Refresh now so an opened tab is never stale, even if the background poll just missed one.
+        viewModelScope.launch {
+            try {
+                val (v, list) = withContext(Dispatchers.IO) { linksClient().fetchLinks() }
+                linkVersion = v; streamLinks = list
+                (_screen.value as? UiScreen.Links)?.let { _screen.value = it.copy(links = list, loading = false) }
+            } catch (e: Exception) {
+                (_screen.value as? UiScreen.Links)?.let { _screen.value = it.copy(loading = false, error = e.message ?: "Failed to load") }
+            }
+        }
+    }
+
+    /** Open a pasted link in a native player — always via the chooser so the user picks VLC/MX/Kodi. */
+    fun onLinkClick(link: StreamLink) {
+        _open.tryEmit(OpenRequest(link.url, mimeForUrl(link.url), forceChooser = true))
+    }
+
+    // Known media extensions get a typed intent (so players register as handlers); everything else
+    // (magnet, web pages, third-party stream endpoints) is opened untyped so the OS resolves it by
+    // scheme and offers whatever can handle it.
+    private fun mimeForUrl(url: String): String {
+        val u = url.substringBefore('#').substringBefore('?').lowercase()
+        return when {
+            Regex("\\.(mp4|mkv|webm|avi|mov|m3u8|ts|flv|mpd|m4v|3gp)$").containsMatchIn(u) -> "video/*"
+            Regex("\\.(mp3|flac|aac|ogg|wav|m4a|opus)$").containsMatchIn(u) -> "audio/*"
+            else -> ""
+        }
+    }
+
+    private fun linksClient(): DroidServeClient {
+        val (u, p) = connectedCreds ?: ("" to null)
+        return client ?: DroidServeClient(connectedBase ?: "", u, p)
+    }
+
+    // Keep the links list fresh in the background so opening the tab is instant and updates arrive
+    // live. Runs whenever connected (alongside the cast poll); self-heals on transient failures.
+    private fun startLinksPoll() {
+        linksJob?.cancel()
+        val base = connectedBase ?: return
+        val (user, pass) = connectedCreds ?: ("" to null)
+        linksJob = viewModelScope.launch {
+            val c = DroidServeClient(base, user, pass)
+            try {
+                val (v, list) = withContext(Dispatchers.IO) { c.fetchLinks() }
+                linkVersion = v; streamLinks = list; pushLinks()
+            } catch (_: Exception) {}
+            while (isActive) {
+                try {
+                    val res = withContext(Dispatchers.IO) { c.pollLinks(linkVersion) }
+                    if (res != null) { linkVersion = res.first; streamLinks = res.second; pushLinks() }
+                } catch (e: Exception) {
+                    kotlinx.coroutines.delay(3000)
+                }
+            }
+        }
+    }
+
+    private fun pushLinks() {
+        (_screen.value as? UiScreen.Links)?.let { _screen.value = it.copy(links = streamLinks, loading = false) }
+    }
+
     /**
      * Click a row: folders navigate; text & images open in the IN-APP viewer (robust, no app
      * switch, works even if the TV has no/only-broken text/image apps); video & audio delegate
@@ -423,7 +504,11 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 viewModelScope.launch {
                     try {
                         val body = withContext(Dispatchers.IO) {
-                            (client ?: DroidServeClient(cur.server.baseUrl)).fetchText(entry.url)
+                            val c = client ?: run {
+                                val (u, p) = connectedCreds ?: ("" to null)
+                                DroidServeClient(connectedBase ?: cur.server.baseUrl, u, p)
+                            }
+                            c.fetchText(entry.url)
                         }
                         (_screen.value as? UiScreen.Viewer)?.let {
                             if (it.name == entry.name) _screen.value = it.copy(text = body, loading = false)
@@ -512,6 +597,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── Real-time cast: long-poll the phone; when it casts, open in the native player ──
     private fun startPollLoop() {
+        startLinksPoll()
         pollJob?.cancel()
         val base = connectedBase ?: return
         val (user, pass) = connectedCreds ?: ("" to null)
@@ -564,6 +650,10 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 _screen.value = render(cur.server, currentPath, "", SortMode.DEFAULT)
                 return true
             }
+            is UiScreen.Links -> {
+                _screen.value = render(cur.server, currentPath, "", SortMode.DEFAULT)
+                return true
+            }
             is UiScreen.ApkInstall -> {
                 _screen.value = render(cur.server, currentPath, "", SortMode.DEFAULT)
                 return true
@@ -571,6 +661,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
             is UiScreen.Browse -> {
                 if (cur.path.isEmpty()) {
                     pollJob?.cancel()
+                    linksJob?.cancel()
                     _screen.value = backToDiscovery()
                     return true
                 }
@@ -587,6 +678,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         pollJob?.cancel()
+        linksJob?.cancel()
         super.onCleared()
     }
 }

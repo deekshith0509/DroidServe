@@ -119,6 +119,38 @@ class DroidServeClient(
         } finally { conn.disconnect() }
     }
 
+    /** Fetch the current streaming-links list. Returns (version, links newest-first). Blocks; run off-main. */
+    fun fetchLinks(): Pair<Int, List<StreamLink>> {
+        val o = getJson("$baseUrl/api/links")
+        return o.optInt("version") to parseLinks(o)
+    }
+
+    /**
+     * Long-poll for the next change to the links list. The server blocks up to ~25s, then returns
+     * 204 (unchanged) so we re-poll. Returns null on 204/timeout, else the new (version, links).
+     */
+    fun pollLinks(since: Int): Pair<Int, List<StreamLink>>? {
+        val conn = open("$baseUrl/api/links/poll?since=$since").apply { readTimeout = 30_000 }
+        try {
+            val code = conn.responseCode
+            if (code == 401) throw AuthException()
+            if (code == 204) return null
+            if (code !in 200..299) throw RuntimeException("HTTP $code")
+            val o = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+            return o.optInt("version") to parseLinks(o)
+        } finally { conn.disconnect() }
+    }
+
+    private fun parseLinks(o: JSONObject): List<StreamLink> {
+        val arr = o.optJSONArray("links") ?: return emptyList()
+        val out = ArrayList<StreamLink>(arr.length())
+        for (i in 0 until arr.length()) {
+            val l = arr.getJSONObject(i)
+            out.add(StreamLink(l.optString("id"), l.optString("url"), l.optString("label"), l.optLong("addedAt")))
+        }
+        return out
+    }
+
     private fun getJson(url: String): JSONObject {
         val conn = open(url).apply { setRequestProperty("Accept", "application/json") }
         try {

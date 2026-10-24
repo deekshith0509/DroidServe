@@ -53,7 +53,16 @@ object FileUtils {
         "wasm" to "application/wasm",
         "ttf"  to "font/ttf",
         "woff" to "font/woff",
-        "woff2" to "font/woff2"
+        "woff2" to "font/woff2",
+        "m4v"  to "video/x-m4v",        "3gp"  to "video/3gpp",       "3g2"  to "video/3gpp2",
+        "ts"   to "video/mp2t",         "m2ts" to "video/mp2t",       "mts"  to "video/mp2t",
+        "mpg"  to "video/mpeg",         "mpeg" to "video/mpeg",       "wmv"  to "video/x-ms-wmv",
+        "flv"  to "video/x-flv",        "ogv"  to "video/ogg",        "m3u8" to "application/vnd.apple.mpegurl",
+        "heic" to "image/heic",         "heif" to "image/heif",       "bmp"  to "image/bmp",
+        "tif"  to "image/tiff",         "tiff" to "image/tiff",
+        "opus" to "audio/opus",         "mka"  to "audio/x-matroska", "oga"  to "audio/ogg",
+        "weba" to "audio/webm",         "mid"  to "audio/midi",
+        "bz2"  to "application/x-bzip2","xz"   to "application/x-xz",  "rar"  to "application/vnd.rar"
     )
 
     // Text-like extensions that browsers should render inline (not download). Kept broad so
@@ -181,16 +190,17 @@ object FileUtils {
 
         // Toolbar: current-folder ZIP + sort controls
         sb.append("""<div class="tb"><span class="st" id="st"></span>""")
-        sb.append("""<button class="sb" id="viewtg" title="Grid / list view">⊞ Grid</button>""")
+        sb.append("""<button class="sb" id="viewtg" title="Grid / list view" aria-label="Toggle grid or list view">⊞ Grid</button>""")
         if (allowZip) {
             val here = encodePath(urlPath)
             val zipHref = if (here.isEmpty()) "/?zip=1" else "/$here?zip=1"
             sb.append("""<a class="sb zipall" href="""").append(zipHref).append(tokAmp)
-            sb.append("""">⬇ Folder ZIP</a>""")
+            sb.append("""" aria-label="Download this folder as ZIP">⬇ Folder ZIP</a>""")
         }
         sb.append("""<button class="sb on" data-s="d">Default</button>""")
         sb.append("""<button class="sb" data-s="n">Name</button>""")
         sb.append("""<button class="sb" data-s="s">Size ↓</button>""")
+        sb.append("""<button class="sb" data-s="t">Date ↓</button>""")
         sb.append("</div>")   // close .tb
 
         // Parent link — OUTSIDE the sortable list so it stays pinned at the top
@@ -234,7 +244,7 @@ object FileUtils {
                 sb.append("""</div><div class="meta">Directory</div></div></a>""")
                 if (allowZip) {
                     val zipHref = "/$href?zip=1$tokAmp"
-                    sb.append("""<a class="btn-zip" href="""").append(zipHref).append("""">⬇ ZIP</a>""")
+                    sb.append("""<a class="btn-zip" href="""").append(zipHref).append("""" aria-label="Download folder as ZIP">⬇ ZIP</a>""")
                 }
                 sb.append("</div>")
             } else {
@@ -267,7 +277,7 @@ object FileUtils {
                     """ data-thumb="${escHtml(thumbUrlFor(rel, 320, tokAmp))}""""
                 } else ""
                 // Every file carries its mime so client JS can offer "open with" (Android chooser).
-                sb.append("""<div class="item file" data-name="${escHtml(eName)}" data-size="${e.size}" data-mime="${escHtml(mime)}"$playAttr$subsAttr$thumbAttr>""")
+                sb.append("""<div class="item file" data-name="${escHtml(eName)}" data-size="${e.size}" data-date="${e.lastModified}" data-mime="${escHtml(mime)}"$playAttr$subsAttr$thumbAttr>""")
                 // Tapping the name opens the file directly: the browser plays/shows it inline
                 // where it can; on Android, JS below hands it to the OS "open with" chooser
                 // (VLC/MX for video, etc.). The ⬇ button is the only download action.
@@ -282,13 +292,13 @@ object FileUtils {
                 if (isVideo || isAudio) {
                     val rawPath = if (urlPath.isEmpty()) eName else "${urlPath.trimEnd('/')}/$eName"
                     sb.append("""<button class="btn-tv" data-path="""").append('"').append(escHtml(rawPath))
-                    sb.append("""" title="Play on TV">📺</button>""")
+                    sb.append("""" title="Play on TV" aria-label="Play on TV">📺</button>""")
                 }
                 // Download button pinned to the right edge. Shown only when downloads are
                 // allowed; with the option off the server is preview/stream-only.
                 if (allowDownload) {
                     sb.append("""<a class="btn-dl" href="/""").append(href)
-                    sb.append("""?dl=1""").append(tokAmp).append("""" download="${escHtml(eName)}" title="Download">⬇</a>""")
+                    sb.append("""?dl=1""").append(tokAmp).append("""" download="${escHtml(eName)}" title="Download" aria-label="Download ${escHtml(eName)}">⬇</a>""")
                 }
                 sb.append("</div>")
             }
@@ -482,6 +492,8 @@ object FileUtils {
 <html lang="en"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='.9em'%20font-size='90'%3E📡%3C/text%3E%3C/svg%3E">
 <title>"""
 
     private val HTML_HEAD_2A = """</title>
@@ -622,13 +634,25 @@ body.tv,body.tv *{cursor:none!important}
 .mu-bar audio{flex:1;min-width:0;height:36px}
 .mu-nav{background:var(--sf2);border:1px solid var(--bd);color:var(--tx);border-radius:8px;width:38px;height:38px;font-size:18px;cursor:pointer;flex-shrink:0}
 .mu-nav:hover{border-color:var(--ac);color:var(--ac)}
+/* ── Streaming links tab ──────────────────────────────────────────────────── */
+.lk-hd .sb{flex-shrink:0}
+.lk-top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.lk-top .c{flex:1;color:var(--mu);font-size:12px}
+.lk-row{display:flex;align-items:center;gap:12px;padding:11px 12px;border:1px solid var(--bd);border-radius:10px;background:var(--sf);margin-bottom:6px}
+.lk-row .lk-i{font-size:20px;flex-shrink:0}
+.lk-row .lk-m{flex:1;min-width:0}
+.lk-row .lk-nm{font-size:14px;color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lk-row .lk-u{font-size:11px;color:var(--mu);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lk-del{background:var(--sf2);border:1px solid var(--bd);color:var(--tx);border-radius:7px;width:34px;height:34px;font-size:14px;cursor:pointer;flex-shrink:0}
+.lk-del:hover{border-color:#ef4444;color:#ef4444}
+.lk-empty{color:var(--mu);text-align:center;padding:40px 16px;font-size:14px;line-height:1.5}
 </style></head>
 <body>
 <header>
 <div class="hr"><h1>📡 """
 
-    private val HTML_HEAD_2B = """</h1><button class="tgl" id="mubtn" title="Music" aria-label="Music">🎵</button><button class="tgl" id="tg" title="Toggle theme" aria-label="Toggle theme">🌙</button></div>
-<input type="search" id="q" placeholder="Filter files in this folder…" autocomplete="off" autocorrect="off" spellcheck="false">
+    private val HTML_HEAD_2B = """</h1><button class="tgl" id="lkbtn" title="Streaming links" aria-label="Streaming links">🔗</button><button class="tgl" id="mubtn" title="Music" aria-label="Music">🎵</button><button class="tgl" id="tg" title="Toggle theme" aria-label="Toggle theme">🌙</button></div>
+<input type="search" id="q" placeholder="Filter files in this folder…" aria-label="Filter files in this folder" autocomplete="off" autocorrect="off" spellcheck="false">
 <nav class="crumb">"""
 
     private val HTML_HEAD_3 = """</nav>
@@ -658,28 +682,32 @@ body.tv,body.tv *{cursor:none!important}
 <img class="lb-img" id="lbimg" alt="">
 <button class="lb-nav lb-next" id="lbnext" title="Next">›</button>
 <div class="lb-info" id="lbinfo"></div>
-<div class="lb-actions"><button class="lb-btn" id="lbzoom">⤢ Zoom</button><button class="lb-btn" id="lbplay">▶ Slideshow</button></div>
+<div class="lb-actions"><button class="lb-btn" id="lbzoom">⤢ Zoom</button><button class="lb-btn" id="lbplay">▶ Slideshow</button><a class="lb-btn" id="lbopen" target="_blank" rel="noopener">↗ Open</a><a class="lb-btn" id="lbdl" download>⬇ Download</a></div>
 </div>
 <div class="mu-ov" id="muov">
-<div class="mu-hd"><span class="mu-ttl">🎵 Music</span><input type="search" id="muq" placeholder="Search songs / albums…" autocomplete="off" spellcheck="false"><button class="pl-x" id="mux" title="Close (Esc)">✕</button></div>
+<div class="mu-hd"><span class="mu-ttl">🎵 Music</span><input type="search" id="muq" placeholder="Search songs / albums…" aria-label="Search songs or albums" autocomplete="off" spellcheck="false"><button class="pl-x" id="mux" title="Close (Esc)">✕</button></div>
 <div class="mu-body" id="mubody"></div>
 <div class="mu-bar" id="mubar" style="display:none"><button class="mu-nav" id="muprev">‹</button><audio id="muaudio" controls preload="auto"></audio><button class="mu-nav" id="munext">›</button><span class="mu-now" id="munow"></span></div>
+</div>
+<div class="mu-ov" id="lkov">
+<div class="mu-hd lk-hd"><span class="mu-ttl">🔗 Links</span><input type="url" id="lkin" placeholder="Paste a video / stream URL…" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Streaming URL to send to the TV"><button class="sb" id="lkadd">Send to TV</button><button class="pl-x" id="lkx" title="Close (Esc)">✕</button></div>
+<div class="mu-body" id="lkbody"></div>
 </div>
 <script>
 (function(){
 // Theme toggle — persisted in localStorage, defaults to dark.
 var root=document.documentElement,tg=document.getElementById('tg');
 function applyTheme(t){root.setAttribute('data-t',t);tg.textContent=t==='light'?'☀️':'🌙';}
-applyTheme(localStorage.getItem('ds-theme')||'dark');
+applyTheme(localStorage.getItem('ds-theme')||(window.matchMedia&&matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'));
 tg.addEventListener('click',function(){var t=root.getAttribute('data-t')==='light'?'dark':'light';localStorage.setItem('ds-theme',t);applyTheme(t);});
 
 var ls=document.getElementById('ls'),st=document.getElementById('st'),em=document.getElementById('em'),q=document.getElementById('q');
 var all=Array.from(ls.querySelectorAll('.item[data-name]')),orig=all.slice(),T=all.length;
-function upd(){var v=0,s=q.value.toLowerCase();all.forEach(function(e){var ok=!s||e.dataset.name.toLowerCase().indexOf(s)>=0;e.style.display=ok?'':'none';if(ok)v++;});st.textContent=v+(v!==T?' of '+T:'')+' item'+(T!==1?'s':'');em.style.display=v===0&&T>0?'':'none';}
+function upd(){var v=0,s=q.value.toLowerCase();all.forEach(function(e){var ok=!s||e.dataset.name.toLowerCase().indexOf(s)>=0;e.style.display=ok?'':'none';if(ok)v++;});st.textContent=v+(v!==T?' of '+T:'')+' item'+(T!==1?'s':'');em.textContent=T===0?'This folder is empty.':'No items match your filter.';em.style.display=v===0?'':'none';}
 upd();
 var t;q.addEventListener('input',function(){clearTimeout(t);t=setTimeout(upd,60);});
 // '/' focuses the filter box for quick keyboard search
-document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});
+document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}else if(e.key==='Escape'&&document.activeElement===q&&q.value){e.preventDefault();q.value='';upd();}});
 
 // ── Opening files: hand every file to the OS default app (file-manager behaviour) ──
 // On Android (phone AND TV), clicking a file fires an ACTION_VIEW intent with the file's
@@ -811,7 +839,9 @@ function lbShow(i){
 if(i<0||i>=imgs.length)return;lbIdx=i;lbZoom=false;
 var it=imgs[i],a=it.querySelector('.item-main');
 lbimg.classList.remove('zoom');lbimg.style.transform='';
-lbimg.src=a.getAttribute('href');lbttl.textContent=it.dataset.name||'';lbinfo.textContent='';
+var hrefimg=a.getAttribute('href');lbimg.src=hrefimg;lbttl.textContent=it.dataset.name||'';lbinfo.textContent='';
+var lo=document.getElementById('lbopen');if(lo)lo.href=hrefimg;
+var ld=document.getElementById('lbdl');if(ld){if(document.querySelector('.btn-dl')){ld.style.display='';ld.href=hrefimg+(hrefimg.indexOf('?')>=0?'&':'?')+'dl=1';ld.setAttribute('download',it.dataset.name||'');}else ld.style.display='none';}
 lbprev.style.visibility=i>0?'':'hidden';lbnext.style.visibility=i<imgs.length-1?'':'hidden';
 var t=it.dataset.thumb;
 if(t){fetch(lbMeta(t),{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}).then(function(m){
@@ -863,6 +893,7 @@ var m=b.dataset.s,arr;
 function grp(e){return e.classList.contains('dir')?0:1;}
 if(m==='d')arr=orig.slice();
 else if(m==='n')arr=all.slice().sort(function(a,b){return grp(a)-grp(b)||a.dataset.name.localeCompare(b.dataset.name,undefined,{sensitivity:'base'});});
+else if(m==='t')arr=all.slice().sort(function(a,b){return grp(a)-grp(b)||Number(b.dataset.date||0)-Number(a.dataset.date||0);});
 else arr=all.slice().sort(function(a,b){return grp(a)-grp(b)||Number(b.dataset.size||0)-Number(a.dataset.size||0);});
 arr.forEach(function(e){ls.appendChild(e);});
 });});
@@ -973,6 +1004,47 @@ document.getElementById('munext').addEventListener('click',function(){step(1);})
 audio.addEventListener('ended',function(){step(1);});
 q.addEventListener('input',function(){if(!curAlbum)render();});
 document.addEventListener('keydown',function(e){if(ov.classList.contains('on')&&e.key==='Escape')closeOv();});
+})();
+</script>
+<script>
+// ── Streaming links tab: paste a URL; it appears on the TV instantly for the user to open ──
+(function(){
+var btn=document.getElementById('lkbtn'),ov=document.getElementById('lkov'),body=document.getElementById('lkbody'),
+inp=document.getElementById('lkin'),addB=document.getElementById('lkadd');
+if(!btn)return;
+var ver=-1,open=false,polling=false;
+function esc(t){var d=document.createElement('div');d.textContent=t||'';return d.innerHTML;}
+function icon(u){if(/^magnet:/i.test(u))return'🧲';if(/\.(mp3|flac|aac|ogg|wav|m4a|opus)(\?|$)/i.test(u))return'🎵';return'🎬';}
+function render(d){
+ver=d.version;var links=d.links||[];
+var h='<div class="lk-top"><span class="c">'+links.length+' link'+(links.length!==1?'s':'')+' · shown on your TV</span>';
+if(links.length)h+='<button class="sb" id="lkclr">Clear all</button>';
+h+='</div>';
+if(!links.length)h+='<div class="lk-empty">No links yet.<br>Paste a URL above and it appears on your TV instantly.</div>';
+links.forEach(function(l){
+h+='<div class="lk-row"><span class="lk-i">'+icon(l.url)+'</span><div class="lk-m"><div class="lk-nm">'+esc(l.label)+'</div><div class="lk-u">'+esc(l.url)+'</div></div><button class="lk-del" data-id="'+esc(l.id)+'" aria-label="Remove">✕</button></div>';
+});
+body.innerHTML=h;
+var c=document.getElementById('lkclr');if(c)c.addEventListener('click',function(){api('/api/links/clear');});
+Array.prototype.forEach.call(body.querySelectorAll('.lk-del'),function(b){b.addEventListener('click',function(){api('/api/links/remove?id='+encodeURIComponent(b.dataset.id));});});
+}
+function api(u){return fetch(u,{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}).then(function(d){if(d)render(d);}).catch(function(){});}
+function load(){api('/api/links');}
+function send(){var u=(inp.value||'').trim();if(!u)return;inp.value='';api('/api/links/add?url='+encodeURIComponent(u));}
+function openOv(){ov.classList.add('on');document.body.style.overflow='hidden';open=true;load();poll();setTimeout(function(){try{inp.focus();}catch(e){}},50);}
+function closeOv(){ov.classList.remove('on');document.body.style.overflow='';open=false;}
+btn.addEventListener('click',openOv);
+document.getElementById('lkx').addEventListener('click',closeOv);
+addB.addEventListener('click',send);
+inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();send();}});
+document.addEventListener('keydown',function(e){if(ov.classList.contains('on')&&e.key==='Escape')closeOv();});
+// Live updates via long-poll while the tab is open (stops as soon as it closes).
+function poll(){if(polling)return;polling=true;(function loop(){
+if(!open){polling=false;return;}
+fetch('/api/links/poll?since='+ver,{credentials:'same-origin'}).then(function(r){return r.status===200?r.json():null;})
+.then(function(d){if(d&&open)render(d);if(open)loop();else polling=false;})
+.catch(function(){if(open)setTimeout(loop,2000);else polling=false;});
+})();}
 })();
 </script></body></html>"""
 }
