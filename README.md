@@ -64,7 +64,7 @@ it automatically.
 | **Works when mDNS is blocked** | Many routers block multicast between clients — the TV also does a **single, polite subnet probe** on launch (with an on-screen **🔄 Rescan**) so reachable servers still appear (protected servers included) |
 | **Pick, don't guess** | Multiple phones can run servers at once; the TV shows the full list and you choose (no auto-select) |
 | **Full D-pad navigation** | Arrow keys move between rows, OK opens folders/files, Back walks up — the file list gets focus by default; search and manual-IP entry are opt-in so text fields never trap the remote |
-| **Poster grid** | Thumbnail poster-grid browsing (and list), with video frame-grab / image thumbnails pulled from the server's cached `/thumb` service and a remembered grid/list toggle |
+| **Compact, adaptive browser** | List view by default (best for arbitrary files); an optional landscape **poster grid** with adjustable column density (**Cozy / Compact / Dense**) and video-frame / image thumbnails from the server's cached `/thumb` service. A focus-driven blurred backdrop previews the highlighted item, and folder stats sit in the always-visible header |
 | **Install APKs** | Tap an `.apk` served by the phone → it downloads locally and opens the **system installer** (grant DroidServe "install unknown apps" once). No ADB, no root — the standard sideload flow, in-app |
 | **In-app viewers** | Text (incl. `.srt`/`.log`/config), images, and audio open **inside the app** — no dependence on an external viewer that may be missing or broken on old TVs |
 | **In-app audio player** | Songs play in-app via the native `MediaPlayer` with the folder as a playlist (Prev/Next, auto-advance, live position) |
@@ -73,6 +73,8 @@ it automatically.
 | **Subtitles** | Sidecar `.srt`/`.vtt` next to a video are handed to the external player (VLC/MX subtitle extras) |
 | **Play on TV (cast)** | Tap 📺 on any video/audio row in the phone web UI; the phone pushes the stream (and any subtitle) to the TV app, which opens it in the native player. The phone becomes the remote |
 | **Streaming links (🔗)** | A **Links** screen shows URLs pushed from the phone in real time (long-poll); pick one with the remote to open — direct streams go to your video player, unresolved web pages open in a browser so nothing dead-ends |
+| **Save to the home screen** | Press the remote's **MENU (☰)** button on any link or playlist in **Links** to save it to the TV's home screen — a playlist saves as a folder, a single link as a tile. Saved items play directly over the internet with **no phone connected**, and appear below the device list on the main screen |
+| **Search (incl. inside playlists)** | The main screen and playlist views search link and playlist names — and search **recursively inside saved playlists**, so a single channel buried in an 87-item playlist is findable from the home screen |
 | **Music library (🎵)** | A searchable, folder-grouped albums grid with in-app playback (native `MediaPlayer`, folder playlist, live position) |
 | **Auth aware** | Password-protected servers prompt for credentials, **remember the password per server** (auto-reconnect next time, re-prompt only if it changed), and stream tokenized media URLs to external players without re-sending the header |
 | **Android 5.0+** | Runs on old TVs (min SDK 21) |
@@ -115,6 +117,8 @@ To load an IPTV channel list (or any `.m3u`/`.m3u8` playlist) onto the TV:
 5. Every channel appears on the TV's **🔗 Links** screen, individually selectable
 
 Or pick a `.m3u` file from your device using the file picker — it's read, parsed, and imported in one step. Up to 500 channels per import (oldest links evicted when the list is full). No outbound calls; no per-site rules — the server imports whatever URLs the playlist contains.
+
+A playlist shows as a **single collapsible group** — on the phone's in-app card and on the TV's **🔗 Links** screen alike (not one row per channel). On the TV, press **MENU (☰)** on the group to save the whole playlist to the home screen for one-press access later, with no phone needed.
 
 ---
 

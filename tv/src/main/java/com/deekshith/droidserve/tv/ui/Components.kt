@@ -133,10 +133,10 @@ fun PrimaryButton(label: String, modifier: Modifier = Modifier, icon: ImageVecto
             .background(DsColor.Amber)
             .border(if (focused) 2.dp else 0.dp, DsColor.Cream, shape)
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = 22.dp, vertical = 12.dp),
+            .padding(horizontal = 18.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (icon != null) { DsIcon(icon, tint = DsColor.OnAmber, size = 19.dp); Spacer(Modifier.width(9.dp)) }
+        if (icon != null) { DsIcon(icon, tint = DsColor.OnAmber, size = 17.dp); Spacer(Modifier.width(8.dp)) }
         Text(label, style = DsType.Label.copy(color = DsColor.OnAmber))
     }
 }
@@ -154,12 +154,12 @@ fun NavChip(label: String, icon: ImageVector?, active: Boolean, modifier: Modifi
             .background(if (focused) DsColor.Ink3 else if (active) DsColor.Amber.copy(alpha = 0.12f) else DsColor.Ink2)
             .border(1.dp, if (on) DsColor.Amber else DsColor.Line, shape)
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 9.dp),
+            .padding(horizontal = 12.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (icon != null) {
-            DsIcon(icon, tint = if (on) DsColor.Amber else DsColor.Muted, size = 18.dp)
-            if (label.isNotEmpty()) Spacer(Modifier.width(8.dp))
+            DsIcon(icon, tint = if (on) DsColor.Amber else DsColor.Muted, size = 16.dp)
+            if (label.isNotEmpty()) Spacer(Modifier.width(7.dp))
         }
         if (label.isNotEmpty())
             Text(label, style = DsType.Meta.copy(color = if (on) DsColor.Cream else DsColor.Muted, fontWeight = FontWeight.Medium))
@@ -196,7 +196,7 @@ fun DsTextField(
 
 /** Thumbnail tile: paints the cached bitmap instantly, loads off-main, falls back to a type icon. */
 @Composable
-fun Thumb(url: String?, fallback: ImageVector, modifier: Modifier = Modifier, fallbackTint: Color = DsColor.Muted, iconSize: Dp = 34.dp) {
+fun Thumb(url: String?, fallback: ImageVector, modifier: Modifier = Modifier, fallbackTint: Color = DsColor.Muted, iconSize: Dp = 28.dp) {
     var bmp by remember(url) { mutableStateOf(url?.let { ThumbLoader.cached(it) }) }
     LaunchedEffect(url) { if (url != null && bmp == null) bmp = ThumbLoader.load(url) }
     Box(
@@ -251,14 +251,14 @@ fun Backdrop(url: String?, modifier: Modifier = Modifier) {
 fun FocusRow(onClick: () -> Unit, modifier: Modifier = Modifier, content: @Composable RowScope.(focused: Boolean) -> Unit) {
     FocusContainer(onClick = onClick, modifier = modifier.fillMaxWidth(), shape = RoundedCornerShape(DsDim.RadiusTile), scale = DsDim.RowScale) { focused ->
         Row(
-            Modifier.fillMaxWidth().heightIn(min = 66.dp).padding(end = 18.dp),
+            Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(end = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
-                Modifier.width(4.dp).height(34.dp).clip(RoundedCornerShape(2.dp))
+                Modifier.width(3.dp).height(26.dp).clip(RoundedCornerShape(2.dp))
                     .background(if (focused) DsColor.Amber else Color.Transparent),
             )
-            Spacer(Modifier.width(14.dp))
+            Spacer(Modifier.width(12.dp))
             content(focused)
         }
     }
@@ -282,15 +282,15 @@ fun StateMessage(
     action: (@Composable () -> Unit)? = null,
 ) {
     Column(
-        Modifier.fillMaxWidth().padding(top = 40.dp),
+        Modifier.fillMaxWidth().padding(top = 28.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(
-            Modifier.size(72.dp).clip(RoundedCornerShape(20.dp)).background(DsColor.Ink2)
-                .border(1.dp, DsColor.Line, RoundedCornerShape(20.dp)),
+            Modifier.size(54.dp).clip(RoundedCornerShape(15.dp)).background(DsColor.Ink2)
+                .border(1.dp, DsColor.Line, RoundedCornerShape(15.dp)),
             contentAlignment = Alignment.Center,
-        ) { DsIcon(icon, tint = iconTint, size = 34.dp) }
-        Spacer(Modifier.height(18.dp))
+        ) { DsIcon(icon, tint = iconTint, size = 26.dp) }
+        Spacer(Modifier.height(14.dp))
         Text(title, style = DsType.Section)
         if (body != null) {
             Spacer(Modifier.height(8.dp))
@@ -351,11 +351,11 @@ fun MediaTile(
                 thumbUrl, fallbackIcon,
                 Modifier.fillMaxWidth().aspectRatio(aspect),
                 fallbackTint = if (focused) DsColor.Amber else DsColor.Muted,
-                iconSize = 54.dp,
+                iconSize = 38.dp,
             )
-            Column(Modifier.padding(12.dp)) {
-                Text(title, style = DsType.Item.copy(fontSize = 15.sp, lineHeight = 19.sp), maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.height(3.dp))
+            Column(Modifier.padding(10.dp)) {
+                Text(title, style = DsType.Item.copy(fontSize = 13.sp, lineHeight = 17.sp), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(2.dp))
                 Text(subtitle, style = DsType.Caption, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }

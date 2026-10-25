@@ -91,7 +91,7 @@ fun LinksScreen(
             )
             if (searchOpen) {
                 Spacer(Modifier.height(12.dp))
-                DsTextField(filter, { filter = it }, "Search channels & playlists…", Modifier.width(380.dp).focusRequester(searchFocus))
+                DsTextField(filter, { filter = it }, "Search links & playlists…", Modifier.width(380.dp).focusRequester(searchFocus))
                 LaunchedEffect(Unit) { runCatching { searchFocus.requestFocus() } }
             }
             Spacer(Modifier.height(16.dp))
@@ -119,7 +119,7 @@ fun LinksScreen(
                             Spacer(Modifier.width(16.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(name, style = DsType.Item, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("${groups[name]} channels", style = DsType.Caption)
+                                Text("${groups[name]} links", style = DsType.Caption)
                             }
                             if (isGroupSaved(name)) { Badge("SAVED"); Spacer(Modifier.width(12.dp)) }
                             DsIcon(DsIcons.Chevron, tint = if (focused) DsColor.Amber else DsColor.Muted, size = 20.dp)
@@ -143,8 +143,8 @@ fun LinksScreen(
                     else add(ContextAction("Save playlist to Home", DsIcons.Link) { onSaveGroup(g) })
                 }
                 focusedLink?.let { l ->
-                    if (isChannelSaved(l.id)) add(ContextAction("Remove channel from Home", DsIcons.Warning, destructive = true) { onRemoveChannel(l.id) })
-                    else add(ContextAction("Save channel to Home", DsIcons.Link) { onSaveChannel(l) })
+                    if (isChannelSaved(l.id)) add(ContextAction("Remove link from Home", DsIcons.Warning, destructive = true) { onRemoveChannel(l.id) })
+                    else add(ContextAction("Save link to Home", DsIcons.Link) { onSaveChannel(l) })
                 }
             }
             val title = focusedGroup ?: focusedLink?.label ?: ""
@@ -179,18 +179,18 @@ fun LinkGroupScreen(
         DsScreen {
             TopBar(
                 state.group,
-                "${state.links.size} channels · press the ☰ menu button to save",
+                "${state.links.size} links · press the ☰ menu button to save",
                 leadingIcon = DsIcons.ListView,
                 actions = { NavChip("Search", DsIcons.Search, active = searchOpen) { searchOpen = !searchOpen } },
             )
             if (searchOpen) {
                 Spacer(Modifier.height(12.dp))
-                DsTextField(filter, { filter = it }, "Search channels…", Modifier.width(380.dp).focusRequester(searchFocus))
+                DsTextField(filter, { filter = it }, "Search links…", Modifier.width(380.dp).focusRequester(searchFocus))
                 LaunchedEffect(Unit) { runCatching { searchFocus.requestFocus() } }
             }
             Spacer(Modifier.height(16.dp))
             when {
-                state.links.isEmpty() -> StateMessage(DsIcons.Link, "This playlist is empty", "Its channels may have expired.")
+                state.links.isEmpty() -> StateMessage(DsIcons.Link, "This playlist is empty", "Its links may have expired.")
                 shown.isEmpty() -> StateMessage(DsIcons.Search, "No matches", "Try a different search term.")
                 else -> LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -212,8 +212,8 @@ fun LinkGroupScreen(
                 if (isGroupSaved(state.group)) add(ContextAction("Remove playlist from Home", DsIcons.Warning, destructive = true) { onRemoveGroup(state.group) })
                 else add(ContextAction("Save whole playlist to Home", DsIcons.ListView) { onSaveGroup(state.group) })
                 focusedLink?.let { l ->
-                    if (isChannelSaved(l.id)) add(ContextAction("Remove channel from Home", DsIcons.Warning, destructive = true) { onRemoveChannel(l.id) })
-                    else add(ContextAction("Save channel to Home", DsIcons.Link) { onSaveChannel(l) })
+                    if (isChannelSaved(l.id)) add(ContextAction("Remove link from Home", DsIcons.Warning, destructive = true) { onRemoveChannel(l.id) })
+                    else add(ContextAction("Save link to Home", DsIcons.Link) { onSaveChannel(l) })
                 }
             }
             ContextMenu(focusedLink?.label ?: state.group, actions) { menuOpen = false }
