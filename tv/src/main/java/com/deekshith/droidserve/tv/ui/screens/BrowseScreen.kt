@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -121,9 +122,10 @@ fun BrowseScreen(
                     if (state.total == 0) "Add files to the shared folder on your phone." else "Try a different search term.",
                 )
                 state.gridMode -> LazyVerticalGrid(
-                    columns = GridCells.Adaptive(DsDim.PosterMin),
+                    columns = GridCells.Adaptive(DsDim.TileMin),
                     horizontalArrangement = Arrangement.spacedBy(DsDim.Gutter),
                     verticalArrangement = Arrangement.spacedBy(DsDim.Gutter),
+                    contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 10.dp, bottom = 28.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     items(state.entries.size, key = { state.entries[it].name + it }) { i ->
@@ -136,7 +138,7 @@ fun BrowseScreen(
                             subtitle = metaFor(e),
                             thumbUrl = if (e.isDir) null else e.thumbUrl,
                             fallbackIcon = iconFor(e),
-                            aspect = 3f / 4f,
+                            aspect = 16f / 10f,
                             modifier = mod,
                         ) { onClick(e) }
                     }
@@ -146,6 +148,7 @@ fun BrowseScreen(
                 }
                 else -> LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     items(state.entries.size, key = { state.entries[it].name + it }) { i ->

@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.CircularProgressIndicator
@@ -44,12 +45,18 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -58,6 +65,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.deekshith.droidserve.tv.ThumbLoader
 import kotlinx.coroutines.delay
 
@@ -98,8 +106,9 @@ fun FocusContainer(
     val s = if (LocalReduceMotion.current) target else animated
     Box(
         modifier
+            .zIndex(if (focused) 1f else 0f)
             .graphicsLayer { scaleX = s; scaleY = s }
-            .then(if (focused) Modifier.shadow(20.dp, shape, clip = false, spotColor = DsColor.Amber, ambientColor = DsColor.Amber) else Modifier)
+            .then(if (focused) Modifier.shadow(12.dp, shape, clip = false, spotColor = DsColor.Amber, ambientColor = DsColor.Amber) else Modifier)
             .clip(shape)
             .background(if (focused) DsColor.Ink3 else resting)
             .border(if (focused) 2.5.dp else 1.dp, if (focused) DsColor.Amber else DsColor.Line, shape)
@@ -190,7 +199,10 @@ fun DsTextField(
 fun Thumb(url: String?, fallback: ImageVector, modifier: Modifier = Modifier, fallbackTint: Color = DsColor.Muted, iconSize: Dp = 34.dp) {
     var bmp by remember(url) { mutableStateOf(url?.let { ThumbLoader.cached(it) }) }
     LaunchedEffect(url) { if (url != null && bmp == null) bmp = ThumbLoader.load(url) }
-    Box(modifier.background(DsColor.Ink2), contentAlignment = Alignment.Center) {
+    Box(
+        modifier.background(Brush.verticalGradient(listOf(DsColor.Ink3, DsColor.Ink2))),
+        contentAlignment = Alignment.Center,
+    ) {
         val b = bmp
         if (b != null) Image(b.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         else DsIcon(fallback, tint = fallbackTint, size = iconSize)
@@ -339,7 +351,7 @@ fun MediaTile(
                 thumbUrl, fallbackIcon,
                 Modifier.fillMaxWidth().aspectRatio(aspect),
                 fallbackTint = if (focused) DsColor.Amber else DsColor.Muted,
-                iconSize = 40.dp,
+                iconSize = 54.dp,
             )
             Column(Modifier.padding(12.dp)) {
                 Text(title, style = DsType.Item.copy(fontSize = 15.sp, lineHeight = 19.sp), maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -365,4 +377,55 @@ fun InitialFocus(requester: FocusRequester, enabled: Boolean, vararg keys: Any?)
             delay(55)
         }
     }
+}
+
+/** Intercept the remote's MENU / options button (Fire TV ≡). Place on a screen's root container. */
+fun Modifier.onMenuKey(enabled: Boolean = true, onMenu: () -> Unit): Modifier =
+    this.onPreviewKeyEvent { e ->
+        if (enabled && e.type == KeyEventType.KeyDown && e.key == Key.Menu) { onMenu(); true } else false
+    }
+
+/** One row of a [ContextMenu]. */
+data class ContextAction(val label: String, val icon: ImageVector, val destructive: Boolean = false, val onClick: () -> Unit)
+
+/**
+ * A centered options card over a scrim, opened by the MENU button. D-pad navigable; dismissed by
+ * BACK or MENU (consumed here so it never reaches the Activity's back handler).
+ */
+@Composable
+fun ContextMenu(title: String, actions: List<ContextAction>, onDismiss: () -> Unit) {
+    val first = remember { FocusRequester() }
+    Box(
+        Modifier.fillMaxSize().background(DsColor.Ink.copy(alpha = 0.86f))
+            .onPreviewKeyEvent { e ->
+                if (e.type == KeyEventType.KeyDown && (e.key == Key.Back || e.key == Key.Menu)) { onDismiss(); true } else false
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier.widthIn(min = 360.dp, max = 520.dp)
+                .clip(RoundedCornerShape(DsDim.RadiusCard))
+                .background(DsColor.Ink2)
+                .border(1.dp, DsColor.Line, RoundedCornerShape(DsDim.RadiusCard))
+                .padding(22.dp),
+        ) {
+            Text(title, style = DsType.Section, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(16.dp))
+            actions.forEachIndexed { i, a ->
+                val m = if (i == 0) Modifier.focusRequester(first) else Modifier
+                FocusContainer(onClick = { a.onClick(); onDismiss() }, modifier = m.fillMaxWidth(), scale = 1f) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        DsIcon(a.icon, tint = if (a.destructive) DsColor.Coral else DsColor.Amber, size = 20.dp)
+                        Spacer(Modifier.width(14.dp))
+                        Text(a.label, style = DsType.Item.copy(color = if (a.destructive) DsColor.Coral else DsColor.Cream))
+                    }
+                }
+                if (i < actions.lastIndex) Spacer(Modifier.height(8.dp))
+            }
+        }
+    }
+    InitialFocus(first, true, title, actions.size)
 }
