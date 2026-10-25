@@ -93,8 +93,8 @@ data class ServerOptions(
     val allowDownload: Boolean = true, // expose forced (?dl=1) file downloads
     val title: String = "DroidServe", // shown in the web UI header / tab
     // Playlist import limits — cap body/URL fetch size and max entries per batch.
-    val importMaxBytes: Int = 2 * 1024 * 1024,  // 2 MB
-    val importMaxEntries: Int = 500             // ≤ LinkStore.CAP
+    val importMaxBytes: Int = 12 * 1024 * 1024, // 12 MB — fits a full IPTV index (e.g. iptv-org)
+    val importMaxEntries: Int = 12000           // ≤ LinkStore.CAP
 )
 
 // ============================================================================

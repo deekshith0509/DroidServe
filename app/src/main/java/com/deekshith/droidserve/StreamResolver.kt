@@ -28,7 +28,7 @@ object StreamResolver {
     }
 
     private const val MAX_HTML = 512 * 1024
-    private const val MAX_M3U = 2 * 1024 * 1024
+    private const val MAX_M3U = 12 * 1024 * 1024
     private const val MEDIA_EXT = "m3u8|mpd|mkv|mp4|m4v|webm|ts|mov|avi|flv"
 
     /**
