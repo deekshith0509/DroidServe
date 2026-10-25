@@ -29,6 +29,7 @@ import com.deekshith.droidserve.tv.ui.screens.AuthScreen
 import com.deekshith.droidserve.tv.ui.screens.BrowseScreen
 import com.deekshith.droidserve.tv.ui.screens.CrashScreen
 import com.deekshith.droidserve.tv.ui.screens.DiscoveryScreen
+import com.deekshith.droidserve.tv.ui.screens.LinkGroupScreen
 import com.deekshith.droidserve.tv.ui.screens.LinksScreen
 import com.deekshith.droidserve.tv.ui.screens.MusicLibraryScreen
 import com.deekshith.droidserve.tv.ui.screens.ViewerScreen
@@ -79,7 +80,8 @@ class MainActivity : ComponentActivity() {
                             is UiScreen.ApkInstall -> ApkInstallScreen(s, vm::installReady)
                             is UiScreen.MusicLibrary -> MusicLibraryScreen(s, vm::openAlbum, vm::setMusicFilter)
                             is UiScreen.AlbumSongs -> AlbumSongsScreen(s, vm::playSong)
-                            is UiScreen.Links -> LinksScreen(s, vm::onLinkClick)
+                            is UiScreen.Links -> LinksScreen(s, vm::onLinkClick, vm::openLinkGroup)
+                            is UiScreen.LinkGroup -> LinkGroupScreen(s, vm::onLinkClick)
                         }
                     }
                 }

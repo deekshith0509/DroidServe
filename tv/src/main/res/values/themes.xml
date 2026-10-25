@@ -1,5 +1,5 @@
 <resources>
     <style name="Theme.DroidServeTv" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@android:color/background_dark</item>
+        <item name="android:windowBackground">@color/ds_ink</item>
     </style>
 </resources>
