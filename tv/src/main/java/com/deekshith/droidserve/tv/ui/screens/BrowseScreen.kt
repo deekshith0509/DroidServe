@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -57,6 +59,7 @@ import com.deekshith.droidserve.tv.ui.NavChip
 import com.deekshith.droidserve.tv.ui.PrimaryButton
 import com.deekshith.droidserve.tv.ui.StateMessage
 import com.deekshith.droidserve.tv.ui.Thumb
+import com.deekshith.droidserve.tv.ui.VScrollbar
 import com.deekshith.droidserve.tv.ui.breadcrumb
 import com.deekshith.droidserve.tv.ui.formatSize
 import com.deekshith.droidserve.tv.ui.iconFor
@@ -125,7 +128,11 @@ fun BrowseScreen(
                     if (state.total == 0) "This folder is empty" else "Nothing matches your filter",
                     if (state.total == 0) "Add files to the shared folder on your phone." else "Try a different search term.",
                 )
-                state.gridMode -> LazyVerticalGrid(
+                state.gridMode -> {
+                    val gridState = rememberLazyGridState()
+                    Box(Modifier.fillMaxSize()) {
+                    LazyVerticalGrid(
+                    state = gridState,
                     columns = GridCells.Adaptive(densityTileMin(GridDensity.intValue)),
                     horizontalArrangement = Arrangement.spacedBy(DsDim.Gutter),
                     verticalArrangement = Arrangement.spacedBy(DsDim.Gutter),
@@ -147,7 +154,14 @@ fun BrowseScreen(
                         ) { onClick(e) }
                     }
                 }
-                else -> LazyColumn(
+                    VScrollbar(gridState.layoutInfo.totalItemsCount, gridState.layoutInfo.visibleItemsInfo.size, gridState.firstVisibleItemIndex)
+                    }
+                }
+                else -> {
+                    val listState = rememberLazyListState()
+                    Box(Modifier.fillMaxSize()) {
+                    LazyColumn(
+                    state = listState,
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(top = 4.dp, bottom = 36.dp),
                     modifier = Modifier.fillMaxSize(),
@@ -158,6 +172,9 @@ fun BrowseScreen(
                             .onFocusChanged { if (it.hasFocus) focused = e }
                             .then(if (i == 0) Modifier.focusRequester(firstItemFocus) else Modifier)
                         EntryRow(e, mod) { onClick(e) }
+                    }
+                }
+                    VScrollbar(listState.layoutInfo.totalItemsCount, listState.layoutInfo.visibleItemsInfo.size, listState.firstVisibleItemIndex)
                     }
                 }
             }

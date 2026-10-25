@@ -40,7 +40,7 @@ class MainActivity : ComponentActivity() {
 
     private val vm: BrowseViewModel by viewModels()
 
-    private companion object { const val REQ_PLAYER = 1001 }
+    private companion object { const val REQ_PLAYER = 1001; const val NAV_PLAYLIST = "nav_playlist" }
 
     // The URL of the video we last handed to an external player, so we can attribute the returned
     // resume position to the right file.
@@ -48,6 +48,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Restore the screen we were on if the OS killed us in the background (e.g. a heavy external
+        // player like VLC under memory pressure), so Back from the player returns here, not to home.
+        savedInstanceState?.getString(NAV_PLAYLIST)?.let { vm.restorePlaylist(it) }
 
         PlaybackStore.pruneIfLarge(application)
 
@@ -73,8 +77,8 @@ class MainActivity : ComponentActivity() {
                     val screen by vm.screen.collectAsStateWithLifecycle()
                     Box(Modifier.fillMaxSize().background(DsColor.Ink)) {
                         when (val s = screen) {
-                            is UiScreen.PlaylistDetail -> SavedPlaylistScreen(s, vm::setPlaylistFilter, vm::onLinkClick, vm::removeSavedPlaylist)
-                            is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual, vm::rescan, vm::setDiscoveryFilter, vm::openSavedPlaylist, vm::onLinkClick, vm::removeSavedPlaylist, vm::removeSavedChannel)
+                            is UiScreen.PlaylistDetail -> SavedPlaylistScreen(s, vm::setPlaylistFilter, vm::onLinkClick, vm::removeSavedPlaylist, vm::saveChannelToHome, vm::removeSavedChannel, vm::isChannelSaved)
+                            is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual, vm::rescan, vm::setDiscoveryFilter, vm::openSavedPlaylist, vm::onLinkClick, vm::removeSavedPlaylist, vm::removeSavedChannel, vm::saveChannelToHome, vm::isChannelSaved, vm::toggleShowAll)
                             is UiScreen.Auth -> AuthScreen(s, vm::submitAuth, vm::forgetSaved)
                             is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort, vm::clearCastToast, vm::toggleView, vm::openMusic, vm::openLinks, vm::cycleDensity) { vm.openFolder(s.server, s.path) }
                             is UiScreen.Viewer -> ViewerScreen(s)
@@ -89,6 +93,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        (vm.screen.value as? UiScreen.PlaylistDetail)?.let { outState.putString(NAV_PLAYLIST, it.name) }
     }
 
     /**

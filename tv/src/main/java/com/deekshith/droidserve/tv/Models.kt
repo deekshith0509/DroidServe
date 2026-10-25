@@ -79,7 +79,9 @@ data class StreamLink(
     /** True = a direct stream (open in a video player); false = a web page (open in a browser). */
     val playable: Boolean = true,
     /** Non-null when this link is one channel of an auto-expanded playlist group. */
-    val group: String? = null
+    val group: String? = null,
+    /** Channel logo URL (IPTV tvg-logo), or null. Loaded lazily into the tile. */
+    val logo: String? = null
 )
 
 /** A playlist the user saved to the TV Home: a name plus the links captured at save time. */

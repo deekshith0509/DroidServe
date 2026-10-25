@@ -41,12 +41,14 @@ class SavedStore(context: Context) {
         put("id", l.id); put("url", l.url); put("label", l.label)
         put("addedAt", l.addedAt); put("playable", l.playable)
         l.group?.let { put("group", it) }
+        l.logo?.let { put("logo", it) }
     }
 
     private fun jsonToLink(o: JSONObject) = StreamLink(
         o.optString("id"), o.optString("url"), o.optString("label"),
         o.optLong("addedAt"), o.optBoolean("playable", true),
         o.optString("group", "").takeIf { it.isNotEmpty() },
+        o.optString("logo", "").takeIf { it.isNotEmpty() },
     )
 
     fun playlists(): List<SavedPlaylist> = ArrayList(playlistList)

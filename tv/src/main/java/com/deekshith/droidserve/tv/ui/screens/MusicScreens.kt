@@ -2,6 +2,7 @@ package com.deekshith.droidserve.tv.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -43,6 +45,7 @@ import com.deekshith.droidserve.tv.ui.DsType
 import com.deekshith.droidserve.tv.ui.FocusRow
 import com.deekshith.droidserve.tv.ui.InitialFocus
 import com.deekshith.droidserve.tv.ui.MediaTile
+import com.deekshith.droidserve.tv.ui.VScrollbar
 import com.deekshith.droidserve.tv.ui.NavChip
 import com.deekshith.droidserve.tv.ui.StateMessage
 import com.deekshith.droidserve.tv.ui.Thumb
@@ -76,7 +79,10 @@ fun MusicLibraryScreen(
             state.albums.isEmpty() -> StateMessage(DsIcons.Audio, "No music yet", "Add audio to the shared folder on your phone.")
             else -> {
                 val shown = state.shown
+                val gridState = rememberLazyGridState()
+                Box(Modifier.fillMaxSize()) {
                 LazyVerticalGrid(
+                    state = gridState,
                     columns = GridCells.Adaptive(densityTileMin(GridDensity.intValue)),
                     horizontalArrangement = Arrangement.spacedBy(DsDim.Gutter),
                     verticalArrangement = Arrangement.spacedBy(DsDim.Gutter),
@@ -95,6 +101,8 @@ fun MusicLibraryScreen(
                             modifier = mod,
                         ) { onAlbum(alb) }
                     }
+                }
+                VScrollbar(gridState.layoutInfo.totalItemsCount, gridState.layoutInfo.visibleItemsInfo.size, gridState.firstVisibleItemIndex)
                 }
             }
         }

@@ -705,7 +705,7 @@ body.tv,body.tv *{cursor:none!important}
 <div class="mu-body" id="mubody"></div>
 <div class="mu-bar" id="mubar" style="display:none"><button class="mu-nav" id="muprev">‹</button><audio id="muaudio" controls preload="auto"></audio><button class="mu-nav" id="munext">›</button><span class="mu-now" id="munow"></span></div>
 </div>
-<div class="mu-ov" id="lkov" style="display:flex;flex-direction:column">
+<div class="mu-ov" id="lkov">
 <div class="mu-hd lk-hd"><span class="mu-ttl">🔗 Links</span><input type="url" id="lkin" placeholder="Paste a video, stream, or .m3u playlist URL…" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Streaming URL to send to the TV"><button class="sb" id="lkadd">Send to TV</button><button class="pl-x" id="lkx" title="Close (Esc)">✕</button></div>
 <div class="mu-body" id="lkbody" style="flex:1"></div>
 <div class="lk-import" id="lkimport">
@@ -1035,6 +1035,8 @@ var btn=document.getElementById('lkbtn'),ov=document.getElementById('lkov'),body
 inp=document.getElementById('lkin'),addB=document.getElementById('lkadd');
 if(!btn)return;
 var ver=-1,open=false,polling=false;
+// Delegated remove — works for rows built lazily on group expand.
+body.addEventListener('click',function(e){var del=e.target.closest&&e.target.closest('.lk-del');if(del){e.stopPropagation();api('/api/links/remove?id='+encodeURIComponent(del.dataset.id));}});
 var iurl=document.getElementById('lkiurl'),iprev=document.getElementById('lkiprev'),
     iinfo=document.getElementById('lkiinfo'),ifile=document.getElementById('lkifile');
 function esc(t){var d=document.createElement('div');d.textContent=t||'';return d.innerHTML;}
@@ -1048,11 +1050,17 @@ function rowHtml(l){
 var ico=l.playable===false?'<span class="lk-unresolved" title="No direct stream found — TV will open in browser">⚠️</span>'+icon(l.url):icon(l.url);
 return '<div class="lk-row"><span class="lk-i">'+ico+'</span><div class="lk-m"><div class="lk-nm">'+esc(l.label)+'</div><div class="lk-u">'+esc(l.url)+'</div></div><button class="lk-del" data-id="'+esc(l.id)+'" aria-label="Remove">✕</button></div>';
 }
+// Windowed render: a huge playlist (thousands of channels) must not build a giant DOM and hang
+// the page. Playlist bodies are built lazily on expand and capped; standalone links capped too.
+var curGroups={},curOrder=[],GMAX=500,SMAX=500;
+function moreNote(shown,total,what){return '<div style="padding:8px 16px;color:var(--mu);font-size:13px">Showing first '+shown+' of '+total+' '+what+' — browse the rest on the TV.</div>';}
+function groupBodyHtml(mem){var x=mem.slice(0,GMAX).map(rowHtml).join('');if(mem.length>GMAX)x+=moreNote(GMAX,mem.length,'channels');return x;}
 function render(d){
 ver=d.version;var links=d.links||[];
 // Split into named playlist groups (one drill-in row each) + standalone links.
 var groups={},order=[],singles=[];
 links.forEach(function(l){if(l.group){if(!groups[l.group]){groups[l.group]=[];order.push(l.group);}groups[l.group].push(l);}else singles.push(l);});
+curGroups=groups;curOrder=order;
 var count=singles.length+order.length;
 var h='<div class="lk-top"><span class="c">'+count+' item'+(count!==1?'s':'')+' · shown on your TV</span>';
 if(links.length)h+='<button class="sb" id="lkclr">Clear all</button>';
@@ -1060,13 +1068,13 @@ h+='</div>';
 if(!links.length)h+='<div class="lk-empty">No links yet.<br>Paste any video, stream, or .m3u playlist URL above — it appears on your TV instantly.<br>Playlists expand into a channel group automatically.</div>';
 order.forEach(function(g,i){var mem=groups[g];
 h+='<div class="lk-grp" data-g="'+i+'"><span class="lk-i">📺</span><span class="lk-nm">'+esc(g)+'</span><span class="lk-ct">'+mem.length+' channels ▸</span></div>';
-h+='<div class="lk-gbody" id="lkg'+i+'" style="display:none">'+mem.map(rowHtml).join('')+'</div>';
+h+='<div class="lk-gbody" id="lkg'+i+'" data-built="0" style="display:none"></div>';
 });
-singles.forEach(function(l){h+=rowHtml(l);});
+singles.slice(0,SMAX).forEach(function(l){h+=rowHtml(l);});
+if(singles.length>SMAX)h+=moreNote(SMAX,singles.length,'links');
 body.innerHTML=h;
 var c=document.getElementById('lkclr');if(c)c.addEventListener('click',function(){api('/api/links/clear');});
-Array.prototype.forEach.call(body.querySelectorAll('.lk-grp'),function(gh){gh.addEventListener('click',function(){var b=document.getElementById('lkg'+gh.dataset.g);if(!b)return;var open=b.style.display!=='none';b.style.display=open?'none':'';var ct=gh.querySelector('.lk-ct');ct.textContent=ct.textContent.replace(open?'▾':'▸',open?'▸':'▾');});});
-Array.prototype.forEach.call(body.querySelectorAll('.lk-del'),function(b){b.addEventListener('click',function(){api('/api/links/remove?id='+encodeURIComponent(b.dataset.id));});});
+Array.prototype.forEach.call(body.querySelectorAll('.lk-grp'),function(gh){gh.addEventListener('click',function(){var i=gh.dataset.g,b=document.getElementById('lkg'+i);if(!b)return;if(b.dataset.built==='0'){b.innerHTML=groupBodyHtml(curGroups[curOrder[i]]||[]);b.dataset.built='1';}var op=b.style.display!=='none';b.style.display=op?'none':'';var ct=gh.querySelector('.lk-ct');ct.textContent=ct.textContent.replace(op?'▾':'▸',op?'▸':'▾');});});
 }
 function api(u){return fetch(u,{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}).then(function(d){if(d)render(d);}).catch(function(){});}
 function load(){api('/api/links');}

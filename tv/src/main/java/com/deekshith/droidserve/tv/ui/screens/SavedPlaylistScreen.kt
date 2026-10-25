@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -24,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.deekshith.droidserve.tv.StreamLink
@@ -39,6 +41,7 @@ import com.deekshith.droidserve.tv.ui.DsType
 import com.deekshith.droidserve.tv.ui.InitialFocus
 import com.deekshith.droidserve.tv.ui.NavChip
 import com.deekshith.droidserve.tv.ui.StateMessage
+import com.deekshith.droidserve.tv.ui.VScrollbar
 import com.deekshith.droidserve.tv.ui.onMenuKey
 
 /** A saved playlist's channels, opened from the saved list on the main screen. */
@@ -48,11 +51,15 @@ fun SavedPlaylistScreen(
     onFilter: (String) -> Unit,
     onPlay: (StreamLink) -> Unit,
     onRemovePlaylist: (String) -> Unit,
+    onSaveChannel: (StreamLink) -> Unit,
+    onRemoveChannel: (String) -> Unit,
+    isChannelSaved: (String) -> Boolean,
 ) {
     var searchOpen by remember { mutableStateOf(false) }
     val searchFocus = remember { FocusRequester() }
     val firstFocus = remember { FocusRequester() }
     var menuOpen by remember { mutableStateOf(false) }
+    var focusedLink by remember { mutableStateOf<StreamLink?>(null) }
     val shown = state.shown
 
     Box(Modifier.fillMaxSize().onMenuKey(enabled = !menuOpen) { menuOpen = true }) {
@@ -77,24 +84,35 @@ fun SavedPlaylistScreen(
             if (shown.isEmpty()) {
                 StateMessage(DsIcons.Link, "No links match", "Try a different search term.")
             } else {
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp),
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    items(shown.size, key = { shown[it].id }) { i ->
-                        val l = shown[i]
-                        val mod = if (i == 0) Modifier.focusRequester(firstFocus) else Modifier
-                        LinkRow(l, mod) { onPlay(l) }
+                val listState = rememberLazyListState()
+                Box(Modifier.fillMaxSize()) {
+                    LazyColumn(
+                        state = listState,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp),
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        items(shown.size, key = { shown[it].id }) { i ->
+                            val l = shown[i]
+                            val mod = Modifier
+                                .onFocusChanged { if (it.hasFocus) focusedLink = l }
+                                .then(if (i == 0) Modifier.focusRequester(firstFocus) else Modifier)
+                            LinkRow(l, mod, saved = isChannelSaved(l.id)) { onPlay(l) }
+                        }
                     }
+                    VScrollbar(listState.layoutInfo.totalItemsCount, listState.layoutInfo.visibleItemsInfo.size, listState.firstVisibleItemIndex)
                 }
             }
         }
         if (menuOpen) {
-            ContextMenu(
-                state.name,
-                listOf(ContextAction("Remove from saved", DsIcons.Warning, destructive = true) { onRemovePlaylist(state.name) }),
-            ) { menuOpen = false }
+            val actions = buildList {
+                focusedLink?.let { l ->
+                    if (isChannelSaved(l.id)) add(ContextAction("Remove link from Home", DsIcons.Warning, destructive = true) { onRemoveChannel(l.id) })
+                    else add(ContextAction("Save link to Home", DsIcons.Link) { onSaveChannel(l) })
+                }
+                add(ContextAction("Remove playlist from Home", DsIcons.Warning, destructive = true) { onRemovePlaylist(state.name) })
+            }
+            ContextMenu(focusedLink?.label ?: state.name, actions) { menuOpen = false }
         }
     }
     InitialFocus(firstFocus, enabled = !searchOpen && shown.isNotEmpty(), state.name, shown.size, searchOpen)
