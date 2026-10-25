@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -11,13 +12,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,11 +30,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.deekshith.droidserve.tv.DiscoveredServer
+import com.deekshith.droidserve.tv.SavedHit
+import com.deekshith.droidserve.tv.SavedPlaylist
+import com.deekshith.droidserve.tv.StreamLink
 import com.deekshith.droidserve.tv.UiScreen
+import com.deekshith.droidserve.tv.ui.ContextAction
+import com.deekshith.droidserve.tv.ui.ContextMenu
 import com.deekshith.droidserve.tv.ui.DsColor
+import com.deekshith.droidserve.tv.ui.DsDim
+import com.deekshith.droidserve.tv.ui.GridDensity
+import com.deekshith.droidserve.tv.ui.densityTileMin
 import com.deekshith.droidserve.tv.ui.DsIcon
 import com.deekshith.droidserve.tv.ui.DsIcons
 import com.deekshith.droidserve.tv.ui.DsLoading
@@ -40,9 +52,11 @@ import com.deekshith.droidserve.tv.ui.DsTextField
 import com.deekshith.droidserve.tv.ui.DsType
 import com.deekshith.droidserve.tv.ui.FocusRow
 import com.deekshith.droidserve.tv.ui.InitialFocus
+import com.deekshith.droidserve.tv.ui.MediaTile
 import com.deekshith.droidserve.tv.ui.NavChip
 import com.deekshith.droidserve.tv.ui.PrimaryButton
-import com.deekshith.droidserve.tv.ui.StateMessage
+import com.deekshith.droidserve.tv.ui.iconForLink
+import com.deekshith.droidserve.tv.ui.onMenuKey
 
 @Composable
 fun CrashScreen(trace: String, onContinue: () -> Unit) {
@@ -67,40 +81,80 @@ fun CrashScreen(trace: String, onContinue: () -> Unit) {
     InitialFocus(continueFocus, enabled = true, Unit)
 }
 
+/**
+ * The main screen: discovered DroidServe phones at the top, and — filling the space below — the
+ * playlists and channels the user saved (which play directly, no phone needed). The remote's MENU
+ * button on a saved item removes it.
+ */
 @Composable
 fun DiscoveryScreen(
     state: UiScreen.Discovery,
     onConnect: (DiscoveredServer) -> Unit,
     onManual: (String, Int) -> Unit,
     onRescan: () -> Unit,
+    onFilter: (String) -> Unit,
+    onOpenPlaylist: (SavedPlaylist) -> Unit,
+    onPlayChannel: (StreamLink) -> Unit,
+    onRemovePlaylist: (String) -> Unit,
+    onRemoveChannel: (String) -> Unit,
 ) {
-    val firstServerFocus = remember { FocusRequester() }
-    DsScreen {
-        Text("DroidServe", style = DsType.Hero)
-        Spacer(Modifier.height(6.dp))
-        Text("Pick a phone running DroidServe on your Wi-Fi", style = DsType.Body.copy(color = DsColor.Muted))
-        state.error?.let { Spacer(Modifier.height(12.dp)); Text(it, style = DsType.Body.copy(color = DsColor.Coral)) }
-        Spacer(Modifier.height(24.dp))
+    val firstFocus = remember { FocusRequester() }
+    val searchFocus = remember { FocusRequester() }
+    var searchOpen by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var focusedPlaylist by remember { mutableStateOf<String?>(null) }
+    var focusedChannel by remember { mutableStateOf<SavedHit?>(null) }
 
-        if (state.connecting) {
-            DsLoading("Connecting…")
-        } else if (state.servers.isEmpty()) {
-            if (state.scanning) DsLoading("Searching the network…")
-            else StateMessage(
-                DsIcons.Device,
-                "No servers found",
-                "Start DroidServe on your phone, then rescan.",
-                action = {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        NavChip("Rescan", DsIcons.Refresh, active = false) { onRescan() }
-                        ManualConnect(onManual)
+    val playlists = state.shownPlaylists
+    val channels = state.shownChannels
+    val hasSaved = state.savedPlaylists.isNotEmpty() || state.savedChannels.isNotEmpty()
+    val serversPresent = state.servers.isNotEmpty() && !state.connecting
+    val focusFirstPlaylist = !serversPresent && playlists.isNotEmpty()
+    val focusFirstChannel = !serversPresent && playlists.isEmpty() && channels.isNotEmpty()
+
+    Box(
+        Modifier.fillMaxSize().background(DsColor.Ink).onMenuKey(enabled = !menuOpen && hasSaved) {
+            if (focusedPlaylist != null || focusedChannel != null) menuOpen = true
+        },
+    ) {
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(densityTileMin(GridDensity.intValue)),
+            horizontalArrangement = Arrangement.spacedBy(DsDim.Gutter),
+            verticalArrangement = Arrangement.spacedBy(DsDim.Gutter),
+            contentPadding = PaddingValues(horizontal = DsDim.ScreenH, vertical = DsDim.ScreenV),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Column {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("DroidServe", style = DsType.Hero, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (hasSaved) NavChip("Search", DsIcons.Search, active = searchOpen) { searchOpen = !searchOpen }
                     }
-                },
-            )
-        } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(state.servers, key = { "${it.host}:${it.port}" }) { srv ->
-                    val mod = if (srv == state.servers.first()) Modifier.focusRequester(firstServerFocus) else Modifier
+                    Spacer(Modifier.height(6.dp))
+                    Text("Pick a phone running DroidServe, or open something you saved", style = DsType.Body.copy(color = DsColor.Muted))
+                    state.error?.let { Spacer(Modifier.height(10.dp)); Text(it, style = DsType.Body.copy(color = DsColor.Coral)) }
+                    if (searchOpen) {
+                        Spacer(Modifier.height(12.dp))
+                        DsTextField(state.filter, onFilter, "Search saved links & playlists…", Modifier.width(380.dp).focusRequester(searchFocus))
+                        LaunchedEffect(Unit) { runCatching { searchFocus.requestFocus() } }
+                    }
+                    Spacer(Modifier.height(20.dp))
+                    SectionLabel("Devices on your network")
+                    Spacer(Modifier.height(10.dp))
+                }
+            }
+
+            if (state.connecting) {
+                item(span = { GridItemSpan(maxLineSpan) }) { DsLoading("Connecting…") }
+            } else if (state.servers.isEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    if (state.scanning) DsLoading("Searching the network…")
+                    else Text("No phones found. Start DroidServe on your phone, then rescan.", style = DsType.Meta)
+                }
+            } else {
+                items(state.servers.size, span = { GridItemSpan(maxLineSpan) }, key = { "srv:" + state.servers[it].host + state.servers[it].port }) { i ->
+                    val srv = state.servers[i]
+                    val mod = if (i == 0) Modifier.focusRequester(firstFocus) else Modifier
                     FocusRow(onClick = { onConnect(srv) }, modifier = mod) { focused ->
                         DsIcon(DsIcons.Device, tint = if (focused) DsColor.Amber else DsColor.Muted, size = 26.dp)
                         Spacer(Modifier.width(16.dp))
@@ -111,17 +165,62 @@ fun DiscoveryScreen(
                         DsIcon(DsIcons.Chevron, tint = DsColor.Muted, size = 20.dp)
                     }
                 }
-                item {
-                    Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        NavChip(if (state.scanning) "Scanning…" else "Rescan", DsIcons.Refresh, active = false) { if (!state.scanning) onRescan() }
-                        ManualConnect(onManual)
-                    }
+            }
+
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    NavChip(if (state.scanning) "Scanning…" else "Rescan", DsIcons.Refresh, active = false) { if (!state.scanning) onRescan() }
+                    ManualConnect(onManual)
+                }
+            }
+
+            if (playlists.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(22.dp)); SectionLabel("Playlists") }
+                items(playlists.size, key = { "pl:" + playlists[it].name }) { i ->
+                    val p = playlists[i]
+                    val mod = Modifier
+                        .onFocusChanged { if (it.hasFocus) { focusedPlaylist = p.name; focusedChannel = null } }
+                        .then(if (i == 0 && focusFirstPlaylist) Modifier.focusRequester(firstFocus) else Modifier)
+                    MediaTile(p.name, "${p.channels.size} links", null, DsIcons.ListView, 16f / 10f, mod) { onOpenPlaylist(p) }
+                }
+            }
+
+            if (channels.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(22.dp)); SectionLabel("Links") }
+                items(channels.size, key = { "ch:" + channels[it].link.id }) { i ->
+                    val hit = channels[i]
+                    val c = hit.link
+                    val mod = Modifier
+                        .onFocusChanged { if (it.hasFocus) { focusedChannel = hit; focusedPlaylist = null } }
+                        .then(if (i == 0 && focusFirstChannel) Modifier.focusRequester(firstFocus) else Modifier)
+                    MediaTile(c.label, hit.from?.let { "In $it" } ?: "Link", null, iconForLink(c.url), 16f / 10f, mod) { onPlayChannel(c) }
                 }
             }
         }
+
+        if (menuOpen) {
+            val title = focusedPlaylist ?: focusedChannel?.link?.label ?: ""
+            val actions = buildList {
+                focusedPlaylist?.let { n -> add(ContextAction("Remove from saved", DsIcons.Warning, destructive = true) { onRemovePlaylist(n) }) }
+                focusedChannel?.let { hit ->
+                    if (hit.from == null) add(ContextAction("Remove from saved", DsIcons.Warning, destructive = true) { onRemoveChannel(hit.link.id) })
+                    else state.savedPlaylists.firstOrNull { it.name == hit.from }?.let { p -> add(ContextAction("Open ${hit.from}", DsIcons.ListView) { onOpenPlaylist(p) }) }
+                }
+            }
+            if (actions.isNotEmpty()) ContextMenu(title, actions) { menuOpen = false } else menuOpen = false
+        }
     }
-    InitialFocus(firstServerFocus, enabled = state.servers.isNotEmpty() && !state.connecting, state.servers.size)
+    InitialFocus(
+        firstFocus,
+        enabled = !searchOpen && !state.connecting && (serversPresent || playlists.isNotEmpty() || channels.isNotEmpty()),
+        state.servers.size, state.connecting, searchOpen, playlists.size, channels.size,
+    )
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(text, style = DsType.Section)
 }
 
 @Composable

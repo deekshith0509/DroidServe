@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -43,6 +42,9 @@ import com.deekshith.droidserve.tv.ui.Backdrop
 import com.deekshith.droidserve.tv.ui.Badge
 import com.deekshith.droidserve.tv.ui.DsColor
 import com.deekshith.droidserve.tv.ui.DsDim
+import com.deekshith.droidserve.tv.ui.GridDensity
+import com.deekshith.droidserve.tv.ui.densityLabel
+import com.deekshith.droidserve.tv.ui.densityTileMin
 import com.deekshith.droidserve.tv.ui.DsIcon
 import com.deekshith.droidserve.tv.ui.DsIcons
 import com.deekshith.droidserve.tv.ui.DsLoading
@@ -70,6 +72,7 @@ fun BrowseScreen(
     onToggleView: () -> Unit,
     onMusic: () -> Unit,
     onLinks: () -> Unit,
+    onCycleDensity: () -> Unit,
     onRetry: () -> Unit,
 ) {
     val firstItemFocus = remember { FocusRequester() }
@@ -93,6 +96,7 @@ fun BrowseScreen(
                 onToggleView = onToggleView,
                 onMusic = onMusic,
                 onLinks = onLinks,
+                onCycleDensity = onCycleDensity,
             )
             if (searchOpen) {
                 Spacer(Modifier.height(12.dp))
@@ -122,10 +126,10 @@ fun BrowseScreen(
                     if (state.total == 0) "Add files to the shared folder on your phone." else "Try a different search term.",
                 )
                 state.gridMode -> LazyVerticalGrid(
-                    columns = GridCells.Adaptive(DsDim.TileMin),
+                    columns = GridCells.Adaptive(densityTileMin(GridDensity.intValue)),
                     horizontalArrangement = Arrangement.spacedBy(DsDim.Gutter),
                     verticalArrangement = Arrangement.spacedBy(DsDim.Gutter),
-                    contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 10.dp, bottom = 28.dp),
+                    contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 10.dp, bottom = 40.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     items(state.entries.size, key = { state.entries[it].name + it }) { i ->
@@ -142,13 +146,10 @@ fun BrowseScreen(
                             modifier = mod,
                         ) { onClick(e) }
                     }
-                    item(span = { GridItemSpan(maxLineSpan) }) {
-                        Spacer(Modifier.height(4.dp)); ServerFooter(state)
-                    }
                 }
                 else -> LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
-                    contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp),
+                    contentPadding = PaddingValues(top = 4.dp, bottom = 36.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     items(state.entries.size, key = { state.entries[it].name + it }) { i ->
@@ -158,7 +159,6 @@ fun BrowseScreen(
                             .then(if (i == 0) Modifier.focusRequester(firstItemFocus) else Modifier)
                         EntryRow(e, mod) { onClick(e) }
                     }
-                    item { Spacer(Modifier.height(4.dp)); ServerFooter(state) }
                 }
             }
         }
@@ -176,6 +176,7 @@ private fun HeroHeader(
     onToggleView: () -> Unit,
     onMusic: () -> Unit,
     onLinks: () -> Unit,
+    onCycleDensity: () -> Unit,
 ) {
     Column {
         // Row 1: location + primary section nav.
@@ -215,8 +216,12 @@ private fun HeroHeader(
             NavChip("Name", null, active = state.sort == SortMode.NAME) { onSort(SortMode.NAME) }
             Spacer(Modifier.width(8.dp))
             NavChip("Largest", null, active = state.sort == SortMode.SIZE) { onSort(SortMode.SIZE) }
+            if (state.gridMode) {
+                Spacer(Modifier.width(8.dp))
+                NavChip(densityLabel(GridDensity.intValue), DsIcons.Grid, active = false) { onCycleDensity() }
+            }
             Spacer(Modifier.width(16.dp))
-            Text(statusLine(state), style = DsType.Caption)
+            Text(statusLine(state), style = DsType.Caption, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -263,41 +268,7 @@ private fun CastBanner() {
     }
 }
 
-@Composable
-private fun ServerFooter(state: UiScreen.Browse) {
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(DsDim.RadiusCard)).background(DsColor.Ink2)
-            .padding(18.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            DsIcon(DsIcons.Info, tint = DsColor.Amber, size = 18.dp)
-            Spacer(Modifier.width(10.dp))
-            Text("This folder", style = DsType.Label)
-        }
-        Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
-            Stat("${state.fileCount}", "files")
-            Stat("${state.dirCount}", "folders")
-            Stat(formatSize(state.totalBytes), "total")
-        }
-        Spacer(Modifier.height(14.dp))
-        Text(
-            "Text, images and audio open here. Video opens in your device's player (VLC / MX).",
-            style = DsType.Caption,
-        )
-        Text("${state.server.displayName}  —  ${state.server.host}:${state.server.port}", style = DsType.Caption)
-    }
-}
-
-@Composable
-private fun Stat(value: String, label: String) {
-    Column {
-        Text(value, style = DsType.Section.copy(color = DsColor.Cream))
-        Text(label, style = DsType.Caption)
-    }
-}
-
 private fun statusLine(s: UiScreen.Browse): String {
-    val shown = s.entries.size
-    return if (s.filter.isBlank()) "$shown items" else "$shown of ${s.total} items"
+    val base = if (s.filter.isBlank()) "${s.entries.size} items" else "${s.entries.size} of ${s.total} items"
+    return "$base   ·   ${s.fileCount} files   ·   ${s.dirCount} folders   ·   ${formatSize(s.totalBytes)}"
 }

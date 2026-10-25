@@ -1,5 +1,6 @@
 package com.deekshith.droidserve.tv.ui
 
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -7,6 +8,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.deekshith.droidserve.tv.R
@@ -36,26 +38,28 @@ val Bricolage = FontFamily(
 )
 
 object DsType {
-    val Hero = TextStyle(fontFamily = Bricolage, fontWeight = FontWeight.ExtraBold, fontSize = 42.sp, lineHeight = 46.sp, letterSpacing = (-0.6).sp, color = DsColor.Cream)
-    val Title = TextStyle(fontFamily = Bricolage, fontWeight = FontWeight.ExtraBold, fontSize = 30.sp, lineHeight = 34.sp, letterSpacing = (-0.4).sp, color = DsColor.Cream)
-    val Section = TextStyle(fontFamily = Bricolage, fontWeight = FontWeight.Bold, fontSize = 22.sp, lineHeight = 27.sp, color = DsColor.Cream)
-    val Item = TextStyle(fontWeight = FontWeight.Medium, fontSize = 18.sp, lineHeight = 23.sp, color = DsColor.Cream)
-    val Body = TextStyle(fontSize = 16.sp, lineHeight = 24.sp, color = DsColor.Cream)
-    val Meta = TextStyle(fontSize = 14.sp, lineHeight = 18.sp, color = DsColor.Muted)
-    val Caption = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, color = DsColor.Muted)
-    val Mono = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 19.sp, color = DsColor.Cream)
-    val Label = TextStyle(fontFamily = Bricolage, fontWeight = FontWeight.Bold, fontSize = 14.sp, letterSpacing = 0.2.sp, color = DsColor.Cream)
+    // Compact scale: TV renders at 960dp wide (1920/xhdpi) upscaled to 4K, so modest sp/dp keep
+    // the 10-foot UI dense and legible rather than looking zoomed-in.
+    val Hero = TextStyle(fontFamily = Bricolage, fontWeight = FontWeight.ExtraBold, fontSize = 29.sp, lineHeight = 33.sp, letterSpacing = (-0.5).sp, color = DsColor.Cream)
+    val Title = TextStyle(fontFamily = Bricolage, fontWeight = FontWeight.ExtraBold, fontSize = 21.sp, lineHeight = 25.sp, letterSpacing = (-0.3).sp, color = DsColor.Cream)
+    val Section = TextStyle(fontFamily = Bricolage, fontWeight = FontWeight.Bold, fontSize = 16.sp, lineHeight = 20.sp, color = DsColor.Cream)
+    val Item = TextStyle(fontWeight = FontWeight.Medium, fontSize = 14.sp, lineHeight = 18.sp, color = DsColor.Cream)
+    val Body = TextStyle(fontSize = 13.sp, lineHeight = 19.sp, color = DsColor.Cream)
+    val Meta = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, color = DsColor.Muted)
+    val Caption = TextStyle(fontSize = 10.5.sp, lineHeight = 14.sp, color = DsColor.Muted)
+    val Mono = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 17.sp, color = DsColor.Cream)
+    val Label = TextStyle(fontFamily = Bricolage, fontWeight = FontWeight.Bold, fontSize = 12.5.sp, letterSpacing = 0.2.sp, color = DsColor.Cream)
 }
 
 object DsDim {
-    val ScreenH = 48.dp              // overscan-safe horizontal margin
-    val ScreenV = 28.dp              // overscan-safe vertical margin
-    val Gutter = 14.dp
-    val RadiusCard = 16.dp
-    val RadiusTile = 12.dp
-    val RadiusChip = 10.dp
-    val PosterMin = 158.dp          // square album tiles
-    val TileMin = 212.dp            // landscape browse tiles (suit 16:9 video thumbnails)
+    val ScreenH = 36.dp              // overscan-safe horizontal margin
+    val ScreenV = 22.dp              // overscan-safe vertical margin
+    val Gutter = 12.dp
+    val RadiusCard = 12.dp
+    val RadiusTile = 10.dp
+    val RadiusChip = 9.dp
+    val PosterMin = 128.dp          // square album tiles
+    val TileMin = 168.dp            // landscape browse tiles (suit 16:9 video thumbnails)
     val FocusScale = 1.05f   // gentle tile zoom; growth is absorbed by grid contentPadding
     val RowScale = 1f        // full-width rows don't zoom — they use the amber bar + ring instead
 }
@@ -69,3 +73,9 @@ fun scrimBrush(top: Float = 0.35f): Brush = Brush.verticalGradient(
 
 /** True when the OS "remove animations" setting is on; focus transitions then snap instead of spring. */
 val LocalReduceMotion = staticCompositionLocalOf { false }
+
+/** App-wide grid density (0 cozy · 1 compact · 2 dense). Toggled on Browse, applied to every grid. */
+val GridDensity = mutableIntStateOf(1)
+
+fun densityTileMin(level: Int): Dp = when (level) { 0 -> 196.dp; 2 -> 132.dp; else -> 164.dp }
+fun densityLabel(level: Int): String = when (level) { 0 -> "Cozy"; 2 -> "Dense"; else -> "Compact" }

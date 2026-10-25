@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.deekshith.droidserve.tv.ui.GridDensity
 
 enum class SortMode { DEFAULT, NAME, SIZE }
 
@@ -38,8 +39,32 @@ sealed interface UiScreen {
         val servers: List<DiscoveredServer> = emptyList(),
         val error: String? = null,
         val connecting: Boolean = false,
-        val scanning: Boolean = false
-    ) : UiScreen
+        val scanning: Boolean = false,
+        val savedPlaylists: List<SavedPlaylist> = emptyList(),
+        val savedChannels: List<StreamLink> = emptyList(),
+        val filter: String = ""
+    ) : UiScreen {
+        private val f get() = filter.trim().lowercase()
+        val shownPlaylists: List<SavedPlaylist> get() =
+            (if (f.isEmpty()) savedPlaylists else savedPlaylists.filter { it.name.lowercase().contains(f) })
+                .sortedBy { it.name.lowercase() }
+        // When searching, surface matching links from INSIDE saved playlists too (recursive), each
+        // tagged with its source playlist ([SavedHit.from]) so the result shows where it lives.
+        // Matches label OR url so playlists with URL-ish labels are still searchable; auto-sorted.
+        val shownChannels: List<SavedHit> get() =
+            if (f.isEmpty()) savedChannels.map { SavedHit(it, null) }.sortedBy { it.link.label.lowercase() }
+            else {
+                val standalone = savedChannels
+                    .filter { it.label.lowercase().contains(f) || it.url.lowercase().contains(f) }
+                    .map { SavedHit(it, null) }
+                val inPlaylists = savedPlaylists.flatMap { p ->
+                    p.channels
+                        .filter { it.label.lowercase().contains(f) || it.url.lowercase().contains(f) }
+                        .map { SavedHit(it, p.name) }
+                }
+                (standalone + inPlaylists).distinctBy { it.link.id }.sortedBy { it.link.label.lowercase() }
+            }
+    }
 
     /**
      * Password prompt for a protected server.
@@ -150,28 +175,15 @@ sealed interface UiScreen {
         val links: List<StreamLink>
     ) : UiScreen
 
-    /**
-     * Top-level launch screen. Shows items the user saved (playlists + channels), which play
-     * directly over the internet with no phone connected. "Connect PC" opens [Discovery].
-     */
-    data class Home(
-        val playlists: List<SavedPlaylist> = emptyList(),
-        val channels: List<StreamLink> = emptyList(),
-        val filter: String = ""
-    ) : UiScreen {
-        private val f get() = filter.trim().lowercase()
-        val shownPlaylists: List<SavedPlaylist> get() = if (f.isEmpty()) playlists else playlists.filter { it.name.lowercase().contains(f) }
-        val shownChannels: List<StreamLink> get() = if (f.isEmpty()) channels else channels.filter { it.label.lowercase().contains(f) }
-    }
-
-    /** A saved playlist's channels, opened from [Home]. */
+    /** A saved playlist's channels, opened from the saved list on [Discovery]. */
     data class PlaylistDetail(
         val name: String,
         val links: List<StreamLink>,
         val filter: String = ""
     ) : UiScreen {
         val shown: List<StreamLink> get() = filter.trim().lowercase().let { f ->
-            if (f.isEmpty()) links else links.filter { it.label.lowercase().contains(f) }
+            (if (f.isEmpty()) links else links.filter { it.label.lowercase().contains(f) || it.url.lowercase().contains(f) })
+                .sortedBy { it.label.lowercase() }
         }
     }
 }
@@ -189,7 +201,9 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private var gridMode = prefs.getBoolean("grid", false)
 
     // Launch at Home (saved playlists/channels). Discovery is reached via "Connect PC".
-    private val _screen = MutableStateFlow<UiScreen>(UiScreen.Home(saved.playlists(), saved.channels()))
+    // Launch at the device picker (Discovery), which also surfaces saved playlists/channels below
+    // the servers so they're reachable without connecting to a phone.
+    private val _screen = MutableStateFlow<UiScreen>(UiScreen.Discovery(savedPlaylists = saved.playlists(), savedChannels = saved.channels()))
     val screen: StateFlow<UiScreen> = _screen.asStateFlow()
 
     // One-shot events telling the Activity to fire an ACTION_VIEW intent (open in native player).
@@ -219,6 +233,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private var scanJob: Job? = null
 
     init {
+        GridDensity.intValue = prefs.getInt("density", 1)   // restore app-wide grid density
         // Primary: live mDNS/NSD — every phone advertising _droidserve._tcp appears here,
         // at near-zero cost (no polling, no sockets). This is the whole discovery story on
         // networks that allow multicast.
@@ -260,10 +275,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun connect(server: DiscoveredServer) {
-        _screen.value = UiScreen.Discovery(
-            servers = (_screen.value as? UiScreen.Discovery)?.servers ?: emptyList(),
-            connecting = true
-        )
+        _screen.value = discoveryScreen(connecting = true)
         viewModelScope.launch {
             try {
                 val probe = DroidServeClient(server.baseUrl)
@@ -285,10 +297,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 // show the prompt (pre-filled with any saved value).
                 promptOrUseSaved(server)
             } catch (e: Exception) {
-                _screen.value = UiScreen.Discovery(
-                    servers = (_screen.value as? UiScreen.Discovery)?.servers ?: emptyList(),
-                    error = "Could not reach ${server.host}:${server.port} — ${e.message}"
-                )
+                _screen.value = discoveryScreen(error = "Could not reach ${server.host}:${server.port} — ${e.message}")
             }
         }
     }
@@ -415,6 +424,12 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         gridMode = !gridMode
         prefs.edit().putBoolean("grid", gridMode).apply()
         (_screen.value as? UiScreen.Browse)?.let { _screen.value = it.copy(gridMode = gridMode) }
+    }
+
+    /** Cycle the app-wide grid density (cozy → compact → dense); every grid re-adapts immediately. */
+    fun cycleDensity() {
+        GridDensity.intValue = (GridDensity.intValue + 1) % 3
+        prefs.edit().putInt("density", GridDensity.intValue).apply()
     }
 
     /** Re-fire the install intent for the already-downloaded APK (e.g. after granting unknown sources). */
@@ -680,18 +695,14 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ── Home / saved items ────────────────────────────────────────────────────
-    private fun homeScreen() = UiScreen.Home(saved.playlists(), saved.channels())
+    private fun discoveryScreen(error: String? = null, connecting: Boolean = false, scanning: Boolean = false) =
+        UiScreen.Discovery(
+            servers = discovered.values.toList(), error = error, connecting = connecting, scanning = scanning,
+            savedPlaylists = saved.playlists(), savedChannels = saved.channels(),
+        )
 
-    fun openHome() { _screen.value = homeScreen() }
-
-    /** From Home: open the LAN file-browsing flow. */
-    fun connectPc() {
-        _screen.value = UiScreen.Discovery(servers = discovered.values.toList())
-        scanOnce()
-    }
-
-    fun setHomeFilter(text: String) {
-        (_screen.value as? UiScreen.Home)?.let { _screen.value = it.copy(filter = text) }
+    fun setDiscoveryFilter(text: String) {
+        (_screen.value as? UiScreen.Discovery)?.let { _screen.value = it.copy(filter = text) }
     }
 
     fun setPlaylistFilter(text: String) {
@@ -705,24 +716,27 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     fun saveLinkGroupToHome(group: String) {
         saved.savePlaylist(group, streamLinks.filter { it.group == group })
-        refreshHome()
+        refreshDiscovery()
     }
 
-    fun saveChannelToHome(link: StreamLink) { saved.saveChannel(link); refreshHome() }
+    fun saveChannelToHome(link: StreamLink) { saved.saveChannel(link); refreshDiscovery() }
 
     fun removeSavedPlaylist(name: String) {
         saved.removePlaylist(name)
-        if (_screen.value is UiScreen.PlaylistDetail) _screen.value = homeScreen() else refreshHome()
+        if (_screen.value is UiScreen.PlaylistDetail) _screen.value = discoveryScreen() else refreshDiscovery()
     }
 
-    fun removeSavedChannel(id: String) { saved.removeChannel(id); refreshHome() }
+    fun removeSavedChannel(id: String) { saved.removeChannel(id); refreshDiscovery() }
 
-    private fun refreshHome() { if (_screen.value is UiScreen.Home) _screen.value = homeScreen() }
+    private fun refreshDiscovery() {
+        (_screen.value as? UiScreen.Discovery)?.let {
+            _screen.value = it.copy(savedPlaylists = saved.playlists(), savedChannels = saved.channels())
+        }
+    }
 
     fun onBack(): Boolean {
         when (val cur = _screen.value) {
-            is UiScreen.Home -> return false
-            is UiScreen.PlaylistDetail -> { _screen.value = homeScreen(); return true }
+            is UiScreen.PlaylistDetail -> { _screen.value = discoveryScreen(); return true }
             is UiScreen.Auth -> { _screen.value = backToDiscovery(); return true }
             is UiScreen.Viewer -> {
                 // Return to the folder listing we came from, from cache (no refetch).
@@ -766,13 +780,13 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 openFolder(cur.server, cur.path.substringBeforeLast('/', ""))
                 return true
             }
-            is UiScreen.Discovery -> { _screen.value = homeScreen(); return true }
+            is UiScreen.Discovery -> return false
         }
     }
 
     // Returning to the picker must show the servers we already know about, not an empty list
     // (mDNS won't necessarily re-announce immediately, and we don't auto-rescan on every back).
-    private fun backToDiscovery() = UiScreen.Discovery(servers = discovered.values.toList())
+    private fun backToDiscovery() = discoveryScreen()
 
     override fun onCleared() {
         pollJob?.cancel()

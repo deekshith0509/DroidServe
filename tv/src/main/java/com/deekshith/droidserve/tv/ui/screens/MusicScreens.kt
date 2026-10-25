@@ -32,6 +32,8 @@ import com.deekshith.droidserve.tv.MusicAlbum
 import com.deekshith.droidserve.tv.UiScreen
 import com.deekshith.droidserve.tv.ui.DsColor
 import com.deekshith.droidserve.tv.ui.DsDim
+import com.deekshith.droidserve.tv.ui.GridDensity
+import com.deekshith.droidserve.tv.ui.densityTileMin
 import com.deekshith.droidserve.tv.ui.DsIcon
 import com.deekshith.droidserve.tv.ui.DsIcons
 import com.deekshith.droidserve.tv.ui.DsLoading
@@ -75,7 +77,7 @@ fun MusicLibraryScreen(
             else -> {
                 val shown = state.shown
                 LazyVerticalGrid(
-                    columns = GridCells.Adaptive(DsDim.PosterMin),
+                    columns = GridCells.Adaptive(densityTileMin(GridDensity.intValue)),
                     horizontalArrangement = Arrangement.spacedBy(DsDim.Gutter),
                     verticalArrangement = Arrangement.spacedBy(DsDim.Gutter),
                     contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 10.dp, bottom = 28.dp),
