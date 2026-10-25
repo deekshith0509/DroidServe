@@ -115,5 +115,5 @@ fun SavedPlaylistScreen(
             ContextMenu(focusedLink?.label ?: state.name, actions) { menuOpen = false }
         }
     }
-    InitialFocus(firstFocus, enabled = !searchOpen && shown.isNotEmpty(), state.name, shown.size, searchOpen)
+    InitialFocus(firstFocus, enabled = !searchOpen && !menuOpen && shown.isNotEmpty(), state.name, shown.size, searchOpen, menuOpen)
 }

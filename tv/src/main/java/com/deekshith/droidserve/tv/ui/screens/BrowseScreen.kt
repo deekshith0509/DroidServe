@@ -215,7 +215,7 @@ private fun HeroHeader(
         Spacer(Modifier.height(16.dp))
         // Row 2: the focused item, large (the immersive hero).
         val title = focused?.name ?: (if (state.path.isEmpty()) state.server.displayName else state.path.substringAfterLast('/'))
-        Text(title, style = DsType.Hero, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(title, style = DsType.Hero, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             if (state.path.isNotEmpty()) Text(breadcrumb(state.path), style = DsType.Meta, maxLines = 1, overflow = TextOverflow.Ellipsis)

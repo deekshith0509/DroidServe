@@ -119,7 +119,7 @@ fun AlbumSongsScreen(state: UiScreen.AlbumSongs, onPlay: (MusicAlbum, Int) -> Un
             Thumb(album.cover, DsIcons.Audio, Modifier.size(84.dp).clip(RoundedCornerShape(14.dp)), fallbackTint = DsColor.Amber, iconSize = 40.dp)
             Spacer(Modifier.width(18.dp))
             Column(Modifier.weight(1f)) {
-                Text(album.name, style = DsType.Title, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(album.name, style = DsType.Title, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(4.dp))
                 Text("${album.songs.size} songs", style = DsType.Meta)
             }

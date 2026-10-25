@@ -165,7 +165,7 @@ fun LinksScreen(
             if (actions.isNotEmpty()) ContextMenu(title, actions) { menuOpen = false } else menuOpen = false
         }
     }
-    InitialFocus(firstFocus, enabled = !searchOpen && itemCount > 0, state.links.size, searchOpen, itemCount)
+    InitialFocus(firstFocus, enabled = !searchOpen && !menuOpen && itemCount > 0, state.links.size, searchOpen, itemCount, menuOpen)
 }
 
 @Composable
@@ -240,7 +240,7 @@ fun LinkGroupScreen(
             ContextMenu(focusedLink?.label ?: state.group, actions) { menuOpen = false }
         }
     }
-    InitialFocus(firstFocus, enabled = !searchOpen && shown.isNotEmpty(), state.group, state.links.size, searchOpen)
+    InitialFocus(firstFocus, enabled = !searchOpen && !menuOpen && shown.isNotEmpty(), state.group, state.links.size, searchOpen, menuOpen)
 }
 
 @Composable

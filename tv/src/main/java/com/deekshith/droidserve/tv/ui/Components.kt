@@ -358,7 +358,7 @@ fun MediaTile(
                 contentScale = contentScale,
             )
             Column(Modifier.padding(10.dp)) {
-                Text(title, style = DsType.Item.copy(fontSize = 13.sp, lineHeight = 17.sp), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(title, style = DsType.Item.copy(fontSize = 13.sp, lineHeight = 17.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(2.dp))
                 Text(subtitle, style = DsType.Caption, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
