@@ -39,7 +39,8 @@ No internet connection required. No data leaves your local network. No accounts.
 | **Thumbnails & gallery** | Server-rendered image/video thumbnails, a grid/gallery view (toggle, remembered per device), duration/resolution badges, and an in-browser image lightbox — prev/next, zoom, slideshow, swipe, EXIF |
 | **Download anything** | Every file row has a ⬇ download button; folders download as ZIP |
 | **Music library** | A dedicated 🎵 tab: folder-grouped albums, lazy cover art, search, a folder playlist, and FLAC streaming — in the web UI and on the TV |
-| **Send links to the TV** | Paste any video/stream URL on the phone (native field, the Share sheet from any app, or the web 🔗 tab) — DroidServe resolves watch/embed pages to the **direct stream** and it appears on the TV instantly to open in VLC/MX/Kodi |
+| **Send links to the TV** | Paste any video/stream URL on the phone (native field, the Share sheet from any app, or the web 🔗 tab) — DroidServe resolves watch/embed pages to the **direct stream** and it appears on the TV instantly to open in VLC/MX/Kodi. Links that can't be resolved show a ⚠️ badge and open in a browser instead — nothing dead-ends |
+| **Playlist import (📋)** | Paste an `.m3u`/`.m3u8` playlist URL or pick a file from disk in the 🔗 tab → Preview shows channel count + sample names → confirm imports all channels into the TV Links screen at once. Supports any EXTM3U source (IPTV, personal playlists, `iptv-org/iptv`) |
 | **TV & remote friendly** | Arrow-key spatial navigation, visible focus rings, and overscan padding for Android TV / D-pad browsers |
 | **Reliable in background** | Foreground service + CPU/Wi-Fi locks + silent keep-alive defeat aggressive OEM freezers (Transsion XOS, MIUI, etc.) so transfers never stall |
 | **QR code** | Auto-generated QR — point another phone's camera to connect instantly |
@@ -99,9 +100,50 @@ Send a web video to the TV without typing anything on the remote. Three ways to 
 
 Each link is pushed to the TV's **🔗 Links** screen in real time (a long-poll channel, persisted so it survives restarts). Pick one with the remote and it opens in your player.
 
-**Smart resolving.** Most "watch"/embed links are an HTML page, not a direct stream — handing that to a video player just bounces straight back out. DroidServe fetches the page once and extracts the real media URL (the player's `<source>`/`<video>`, an `og:video` tag, or an HLS/MP4 embed config), so the TV gets something VLC/MX/Kodi can actually stream. The decision is made by the response **`Content-Type`**, never the file extension (a watch-page URL can itself contain `.mkv`). If a page genuinely can't be resolved, the link is flagged as a page and opens in a **browser** instead — so no link type dead-ends. Direct URLs and `magnet:` links pass through untouched.
+**Smart resolving.** Most "watch"/embed links are an HTML page, not a direct stream — handing that to a video player just bounces straight back out. DroidServe fetches the page once and extracts the real media URL (the player's `<source>`/`<video>`, an `og:video` tag, or an HLS/MP4 embed config), so the TV gets something VLC/MX/Kodi can actually stream. The decision is made by the response **`Content-Type`**, never the file extension. If a page genuinely can't be resolved, the link shows a **⚠️ badge** in the 🔗 tab and opens in a browser on the TV — nothing dead-ends. Direct URLs and `magnet:` links pass through untouched.
 
 > Generic and best-effort by design — it is not a per-site scraper (no DRM/obfuscated-player extraction). The server must be running for the TV to receive links.
+
+### Importing an M3U playlist
+
+To load an IPTV channel list (or any `.m3u`/`.m3u8` playlist) onto the TV:
+
+1. Open the **🔗 Links** tab in the web UI
+2. Scroll to **Import playlist** at the bottom
+3. Paste the playlist URL (e.g. `https://iptv-org.github.io/iptv/index.m3u`) and tap **Preview**
+4. Confirm the channel count — tap **Import all**
+5. Every channel appears on the TV's **🔗 Links** screen, individually selectable
+
+Or pick a `.m3u` file from your device using the file picker — it's read, parsed, and imported in one step. Up to 500 channels per import (oldest links evicted when the list is full). No outbound calls; no per-site rules — the server imports whatever URLs the playlist contains.
+
+---
+
+## HTTP API Routes
+
+The native-client API used by the TV app and accessible from any HTTP client.
+
+| Route | Method | Description |
+|---|---|---|
+| `/api/info` | GET | Server facts (name, IP, port, auth status, API version) |
+| `/api/list` | GET | Directory listing as JSON for the root folder |
+| `/api/list/<path>` | GET | Directory listing for a subfolder |
+| `/api/music` | GET | Full recursive music library (folder-grouped albums) |
+| `/api/cast?path=<rel>` | GET | Push a file from the server to the TV (cast) |
+| `/api/tv/poll` | GET | TV long-poll — waits up to 25 s for the next cast command |
+| `/api/links` | GET | Current streaming-links list `{version, links[]}` |
+| `/api/links/add?url=<url>` | GET | Add one URL; resolves watch/embed pages to direct stream |
+| `/api/links/remove?id=<id>` | GET | Remove one link by ID |
+| `/api/links/clear` | GET | Remove all links |
+| `/api/links/poll?since=<v>` | GET | Long-poll for the next links-list change |
+| `/api/links/import` | **POST** | Import M3U playlist from request body → `{version, links[], added, skipped}` |
+| `/api/links/import?url=<url>` | **POST** | Server fetches M3U from URL, imports → same response |
+| `/api/links/import/preview?url=<url>` | GET | Preview channel count + sample titles, no write → `{count, sample[]}` |
+| `/thumb/<path>?w=160\|320\|480` | GET | Cached WebP thumbnail |
+| `/meta/<path>` | GET | Media metadata (dimensions, duration, title, artist) |
+| `/<path>` | GET/HEAD | File serving (range requests, `?m3u=1`, `?vtt=1`, `?dl=1`, `?zip=1`) |
+| `*` | OPTIONS | CORS preflight |
+
+All responses include `Access-Control-Allow-Origin: *`. Token auth via `?tok=<token>` works on every route for external player compatibility.
 
 ---
 
@@ -166,8 +208,10 @@ app/src/main/java/com/deekshith/droidserve/     # Phone server
 ├── FileUtils.kt             # MIME, HTML builder + in-browser player + 🔗/🎵 tabs, SRT→VTT
 ├── ApiJson.kt               # Hand-rolled JSON for the /api/* native-client API
 ├── CastQueue.kt             # Real-time phone→TV cast channel (library "Play on TV")
-├── LinkStore.kt             # Persisted, versioned streaming-links list + long-poll
+├── LinkStore.kt             # Persisted, versioned streaming-links list + long-poll; addBatch for playlist import
 ├── StreamResolver.kt        # Resolves watch/embed pages to a direct media URL
+├── PlaylistImport.kt        # Pure EXTM3U parser — no Android deps, fully JVM-testable
+├── IoUtils.kt               # readCapped — bounded InputStream→String, shared across resolvers
 ├── ShareActivity.kt         # Share-sheet target ("Share → DroidServe → TV")
 ├── App.kt                   # Application — attaches LinkStore at process start
 ├── NsdAdvertiser.kt         # mDNS/NSD advertising (_droidserve._tcp)
