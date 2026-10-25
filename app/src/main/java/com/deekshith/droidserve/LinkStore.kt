@@ -17,7 +17,7 @@ object LinkStore {
 
     data class Link(val id: String, val url: String, val label: String, val addedAt: Long, val playable: Boolean = true, val group: String? = null)
 
-    private const val CAP = 12000
+    private const val CAP = Int.MAX_VALUE   // no entry cap — a playlist imports in full
     private val lock = java.lang.Object()
     private val links = ArrayList<Link>()   // newest first
     private var version = 0

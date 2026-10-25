@@ -93,8 +93,8 @@ data class ServerOptions(
     val allowDownload: Boolean = true, // expose forced (?dl=1) file downloads
     val title: String = "DroidServe", // shown in the web UI header / tab
     // Playlist import limits — cap body/URL fetch size and max entries per batch.
-    val importMaxBytes: Int = 12 * 1024 * 1024, // 12 MB — fits a full IPTV index (e.g. iptv-org)
-    val importMaxEntries: Int = 12000           // ≤ LinkStore.CAP
+    val importMaxBytes: Int = 64 * 1024 * 1024, // 64 MB body guard (OOM/DoS only; any real playlist fits)
+    val importMaxEntries: Int = Int.MAX_VALUE   // no entry cap
 )
 
 // ============================================================================
@@ -276,8 +276,8 @@ class HttpServer(
                 // keep-alive socket that never sends EOF between requests.
                 readCapped(session.inputStream, declared.toInt().coerceAtLeast(0))
             }
-            val parsed = PlaylistImport.parse(body, options.importMaxEntries * 2)
-            val kept   = parsed.filter { isAllowedLink(it.url) }.take(options.importMaxEntries)
+            val parsed = PlaylistImport.parse(body, options.importMaxEntries)
+            val kept   = parsed.filter { isAllowedLink(it.url) }
             // Group the imported channels so the TV shows them as one drill-in list, not a flood.
             val grp = if (!urlParam.isNullOrEmpty()) LinkIngest.groupNameFor(urlParam) else "Imported playlist"
             val (v, list) = LinkStore.addBatch(kept.map { it.url to it.title }, grp)

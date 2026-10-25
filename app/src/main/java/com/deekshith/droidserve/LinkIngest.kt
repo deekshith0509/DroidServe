@@ -20,7 +20,7 @@ object LinkIngest {
         val playable: Boolean
     )
 
-    fun ingest(url: String, maxEntries: Int = 500): Result =
+    fun ingest(url: String, maxEntries: Int = Int.MAX_VALUE): Result =   // no cap; in-app card + share sheet use this
         when (val o = StreamResolver.classify(url, maxEntries)) {
             is StreamResolver.Outcome.Single -> {
                 val (v, list) = LinkStore.add(o.url, o.title, o.playable)
