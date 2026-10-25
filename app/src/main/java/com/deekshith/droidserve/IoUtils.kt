@@ -13,3 +13,10 @@ internal fun readCapped(input: InputStream, max: Int): String {
     }
     return String(buf, 0, total, Charsets.UTF_8)
 }
+
+// Schemes a media player / torrent client / browser can actually open. Shared by the HTTP link
+// routes and the auto-expand ingest so both accept exactly the same set.
+private val LINK_SCHEME = Regex("^(https?|rtsps?|rtmps?|mms|ftp|magnet):", RegexOption.IGNORE_CASE)
+
+/** True if [url] uses a scheme we accept as a streaming link. */
+internal fun isSupportedLink(url: String): Boolean = url.isNotEmpty() && LINK_SCHEME.containsMatchIn(url)

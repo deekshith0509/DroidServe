@@ -19,12 +19,27 @@ object StreamResolver {
 
     data class Resolved(val url: String, val title: String?, val playable: Boolean)
 
+    /** What a pasted link actually is, once fetched. */
+    sealed interface Outcome {
+        /** A single thing to open: direct stream, HLS manifest, resolved watch-page, or raw link. */
+        data class Single(val url: String, val title: String?, val playable: Boolean) : Outcome
+        /** A playlist of ≥2 independent entries to expand into separate links. */
+        data class Collection(val entries: List<PlaylistImport.Entry>) : Outcome
+    }
+
     private const val MAX_HTML = 512 * 1024
+    private const val MAX_M3U = 2 * 1024 * 1024
     private const val MEDIA_EXT = "m3u8|mpd|mkv|mp4|m4v|webm|ts|mov|avi|flv"
 
-    fun resolve(url: String): Resolved {
+    /**
+     * Fetch [url] once and decide what it is. HLS manifests and direct media resolve to
+     * [Outcome.Single]; an IPTV/channel playlist resolves to [Outcome.Collection] (entries with
+     * relative URLs absolutized against the playlist). Fully best-effort: any failure falls back to
+     * a passthrough Single of the original URL.
+     */
+    fun classify(url: String, maxEntries: Int = 500): Outcome {
         // magnet/rtsp/etc. are handled by their own apps — leave untouched, treat as playable.
-        if (!url.startsWith("http", ignoreCase = true)) return Resolved(url, null, true)
+        if (!url.startsWith("http", ignoreCase = true)) return Outcome.Single(url, null, true)
         return try {
             val conn = open(url)
             try {
@@ -33,23 +48,49 @@ object StreamResolver {
                 // player (which then bounces straight back out, looking like a crash).
                 val ctype = (conn.contentType ?: "").lowercase()
                 when {
-                    ctype.startsWith("video/") || ctype.startsWith("audio/") ||
-                        ctype.contains("mpegurl") || ctype.contains("dash+xml") ->
-                        Resolved(url, null, true)                        // already a direct stream
-                    ctype.contains("html") || ctype.contains("xml") || ctype.isEmpty() -> {
-                        val html = conn.inputStream.use { readCapped(it, MAX_HTML) }
-                        val media = extractMediaUrl(html, url)
-                        // Found a real stream → playable. Otherwise keep the page URL but flag it
-                        // non-playable so the TV opens it in a browser (its own JS player) instead
-                        // of bouncing a native player.
-                        if (media != null) Resolved(media, extractTitle(html), true)
-                        else Resolved(url, extractTitle(html), false)
+                    // mpegurl first — "audio/x-mpegurl" would otherwise match the audio/ branch and
+                    // skip the body peek that tells an HLS stream from an IPTV channel list.
+                    ctype.contains("mpegurl") -> {
+                        val body = conn.inputStream.use { readCapped(it, MAX_M3U) }
+                        classifyM3u(url, body, maxEntries)
                     }
-                    else -> Resolved(url, null, true)                    // unknown type — let a player try
+                    ctype.startsWith("video/") || ctype.startsWith("audio/") || ctype.contains("dash+xml") ->
+                        Outcome.Single(url, null, true)                  // already a direct stream
+                    ctype.contains("html") || ctype.contains("xml") || ctype.isEmpty() -> {
+                        val body = conn.inputStream.use { readCapped(it, MAX_M3U) }
+                        // A server that mislabels an .m3u as text/plain or html — sniff the body.
+                        if (LinkClassifier.looksLikeM3u(body)) classifyM3u(url, body, maxEntries)
+                        else {
+                            val media = extractMediaUrl(body, url)
+                            // Found a real stream → playable. Otherwise keep the page URL but flag it
+                            // non-playable so the TV opens it in a browser (its own JS player)
+                            // instead of bouncing a native player.
+                            if (media != null) Outcome.Single(media, extractTitle(body), true)
+                            else Outcome.Single(url, extractTitle(body), false)
+                        }
+                    }
+                    else -> Outcome.Single(url, null, true)              // unknown type — let a player try
                 }
             } finally { conn.disconnect() }
-        } catch (_: Exception) { Resolved(url, null, true) }             // probe failed — best-effort passthrough
+        } catch (_: Exception) { Outcome.Single(url, null, true) }       // probe failed — best-effort passthrough
     }
+
+    /** Back-compat single-link resolver. A collection collapses to its (playable) playlist URL. */
+    fun resolve(url: String): Resolved = when (val o = classify(url)) {
+        is Outcome.Single     -> Resolved(o.url, o.title, o.playable)
+        is Outcome.Collection -> Resolved(url, null, true)
+    }
+
+    private fun classifyM3u(url: String, body: String, maxEntries: Int): Outcome =
+        when (LinkClassifier.classify(body)) {
+            LinkClassifier.Kind.COLLECTION -> {
+                val entries = PlaylistImport.parse(body, maxEntries)
+                    .filter { isSupportedLink(it.url) }
+                    .map { it.copy(url = absolutize(it.url, url)) }
+                if (entries.size >= 2) Outcome.Collection(entries) else Outcome.Single(url, null, true)
+            }
+            else -> Outcome.Single(url, null, true)   // HLS stream or single entry → play the URL as-is
+        }
 
     /** Pure: pull the most likely direct media URL out of an HTML page. Null if none found. */
     fun extractMediaUrl(html: String, baseUrl: String): String? {

@@ -92,6 +92,7 @@ object ApiJson {
             append("\"label\":\"").append(escape(l.label)).append("\",")
             append("\"addedAt\":").append(l.addedAt).append(',')
             append("\"playable\":").append(l.playable)
+            if (l.group != null) { append(",\"group\":\""); append(escape(l.group)); append('"') }
             append('}')
         }
         append("]}")
@@ -110,6 +111,7 @@ object ApiJson {
             append("\"label\":\"").append(escape(l.label)).append("\",")
             append("\"addedAt\":").append(l.addedAt).append(',')
             append("\"playable\":").append(l.playable)
+            if (l.group != null) { append(",\"group\":\""); append(escape(l.group)); append('"') }
             append('}')
         }
         append("]}")

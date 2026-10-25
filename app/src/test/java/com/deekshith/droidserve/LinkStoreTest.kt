@@ -3,6 +3,8 @@ package com.deekshith.droidserve
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -110,6 +112,23 @@ class LinkStoreTest {
         assertEquals("a.mp4", LinkStore.labelFor("http://host/path/a.mp4?x=1"))
         assertEquals("host.tv", LinkStore.labelFor("https://host.tv"))
         assertTrue(LinkStore.labelFor("magnet:?xt=urn:btih:abc&dn=My%20Movie").contains("My Movie"))
+    }
+
+    @Test fun addBatch_withGroup_tagsEveryItemAndSerializes() {
+        LinkStore.clear()
+        val items = (1..3).map { "rtsp://host/ch$it.ts" to "Ch$it" }
+        val (v, list) = LinkStore.addBatch(items, group = "My IPTV")
+        assertTrue(list.all { it.group == "My IPTV" })
+        val arr = JSONObject(ApiJson.links(v, list)).getJSONArray("links")
+        assertEquals("My IPTV", arr.getJSONObject(0).getString("group"))
+    }
+
+    @Test fun add_singleLink_hasNoGroupKey() {
+        LinkStore.clear()
+        val (v, list) = LinkStore.add("http://h/a.mp4")
+        assertNull(list[0].group)
+        // A null group must be omitted from the wire format (not serialized as "null").
+        assertFalse(JSONObject(ApiJson.links(v, list)).getJSONArray("links").getJSONObject(0).has("group"))
     }
 
     @Test fun links_jsonRoundTrips() {

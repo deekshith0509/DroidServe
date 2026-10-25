@@ -15,7 +15,7 @@ import java.io.File
  */
 object LinkStore {
 
-    data class Link(val id: String, val url: String, val label: String, val addedAt: Long, val playable: Boolean = true)
+    data class Link(val id: String, val url: String, val label: String, val addedAt: Long, val playable: Boolean = true, val group: String? = null)
 
     private const val CAP = 500
     private val lock = java.lang.Object()
@@ -54,12 +54,13 @@ object LinkStore {
      * Looping [add] N times would cause N full-file rewrites and bump the version N times.
      * [group] from playlist entries is intentionally not stored — no group UI exists yet.
      */
-    fun addBatch(items: List<Pair<String, String?>>): Pair<Int, List<Link>> = synchronized(lock) {
+    fun addBatch(items: List<Pair<String, String?>>, group: String? = null): Pair<Int, List<Link>> = synchronized(lock) {
+        val grp = group?.let { sanitize(it) }?.ifEmpty { null }
         for ((url, label) in items) {
             val clean = sanitize(url); if (clean.isEmpty()) continue
             links.removeAll { it.url == clean }
             val lbl = sanitize(label.orEmpty()).ifEmpty { sanitize(labelFor(clean)) }.ifEmpty { clean.take(60) }
-            links.add(0, Link(nextId(), clean, lbl, System.currentTimeMillis(), true))
+            links.add(0, Link(nextId(), clean, lbl, System.currentTimeMillis(), true, grp))
         }
         while (links.size > CAP) links.removeAt(links.size - 1)
         if (items.isNotEmpty()) bump()
@@ -101,7 +102,7 @@ object LinkStore {
     private fun persist() {
         val f = file ?: return
         runCatching {
-            f.writeText(links.joinToString("\n") { "${it.addedAt}\t${it.id}\t${it.url}\t${it.label}\t${if (it.playable) 1 else 0}" })
+            f.writeText(links.joinToString("\n") { "${it.addedAt}\t${it.id}\t${it.url}\t${it.label}\t${if (it.playable) 1 else 0}\t${it.group ?: ""}" })
         }
     }
 
@@ -110,9 +111,10 @@ object LinkStore {
         runCatching {
             if (!f.exists()) return@runCatching
             for (line in f.readLines()) {
-                val p = line.split('\t', limit = 5)
+                val p = line.split('\t', limit = 6)
                 if (p.size >= 4) {
-                    links.add(Link(p[1], p[2], p[3], p[0].toLongOrNull() ?: 0L, if (p.size >= 5) p[4] == "1" else true))
+                    val group = if (p.size >= 6) p[5].ifEmpty { null } else null
+                    links.add(Link(p[1], p[2], p[3], p[0].toLongOrNull() ?: 0L, if (p.size >= 5) p[4] == "1" else true, group))
                     p[1].substringAfterLast('_').toLongOrNull()?.let { if (it >= counter) counter = it + 1 }
                 }
             }
