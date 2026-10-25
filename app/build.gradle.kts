@@ -72,6 +72,12 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true  // required for Robolectric to resolve the manifest
+        }
+    }
 }
 
 dependencies {
@@ -107,4 +113,9 @@ dependencies {
     // Real org.json on the JVM test classpath so API round-trip tests can parse the
     // exact bytes the server emits (the android.jar org.json is a stub in unit tests).
     testImplementation("org.json:json:20240303")
+    // Robolectric — Android API stubs for JVM unit tests. HttpServerRouteTest boots a real
+    // NanoHTTPD instance and hits it with HTTP calls, which requires android.util.Base64,
+    // android.os.SystemClock, etc. Test-only; does not ship in the APK.
+    testImplementation("org.robolectric:robolectric:4.12.2")
+    testImplementation("androidx.test:core-ktx:1.5.0")
 }

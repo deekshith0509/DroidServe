@@ -34,6 +34,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest --stacktrace
+
       - name: Build debug APKs (phone + TV)
         run: ./gradlew assembleDebug --stacktrace
 
