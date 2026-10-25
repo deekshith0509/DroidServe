@@ -94,17 +94,15 @@ class LinkStoreTest {
         assertEquals("B", list[0].label)
     }
 
-    @Test fun addBatch_evictsOldestWhenOverCap() {
+    @Test fun addBatch_keepsEverything_noCap() {
         LinkStore.clear()
-        // Seed just under CAP (12000)
-        val seed = (1..11990).map { "rtsp://pre/ch$it.ts" to "Pre$it" }
+        // A large playlist imports in full — no entry cap / no eviction.
+        val seed = (1..13000).map { "rtsp://pre/ch$it.ts" to "Pre$it" }
         LinkStore.addBatch(seed)
-        assertEquals(11990, LinkStore.snapshot().second.size)
-        // Add 20 more — total 12010 > CAP (12000), should evict 10
+        assertEquals(13000, LinkStore.snapshot().second.size)
         val extra = (1..20).map { "rtsp://new/ch$it.ts" to "New$it" }
         val (_, list) = LinkStore.addBatch(extra)
-        assertEquals("must not exceed CAP=12000", 12000, list.size)
-        // newest 20 survive
+        assertEquals("no cap — all kept", 13020, list.size)
         for (i in 20 downTo 1) assertTrue("New$i should be in list", list.any { it.label == "New$i" })
     }
 
