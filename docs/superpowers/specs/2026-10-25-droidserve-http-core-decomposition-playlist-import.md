@@ -219,3 +219,30 @@ fun addBatch(items: List<Pair<String, String?>>): Pair<Int, List<Link>> = synchr
 Found in the code: the web UI already swallows the single-add 400 silently. `api()` (FileUtils.kt:1031) is `r.ok ? r.json() : null` → `if (d) render(d)`, and the input is cleared *before* the call (FileUtils.kt:1033). So the server returns a 400 on a rejected URL, but the user sees nothing — "fail silently as the single-add path does today" is true only because the client drops the server's error, not because the server is silent.
 
 Import is the one place silent dropping genuinely confuses (paste 300, land 212 — "did it break?"). Decision: import returns its own shape `{version, links, added, skipped}` — a brand-new route, so §3.4's frozen `api/links` contract is untouched. The Links tab shows "added A · skipped S"; `skipped` aggregates bad-scheme + over-cap drops and is **not** itemized (per-URL reasons are noise, need UI the app lacks, and the single-add path doesn't do it either). An over-`importMaxBytes` body is the single hard error → **413**, never a silent truncation that would drop the tail of the user's playlist with no signal.
+
+## 9. Follow-on scope (not in this plan, recorded here so they don't get lost)
+
+### 9.1 M3U URL auto-detect in `api/links/add`
+When a user pastes a URL like `https://iptv-org.github.io/iptv/index.m3u` into the single-add field, the natural expectation is that the individual channels appear in the Links list — not that one link to the M3U file itself is stored (which then opens as a playlist in VLC/MX, bypassing the per-channel UI entirely).
+
+The detection logic is a trivial Phase 2 add-on — it reuses everything already built:
+```
+api/links/add?url=<m3u-url>
+→ if HEAD response Content-Type contains "mpegurl"  OR  url ends with .m3u/.m3u8
+→ fetch body (bounded by importMaxBytes), pass to PlaylistImport.parse(), addBatch, return importResult shape
+→ else: current single-link path unchanged (StreamResolver.resolve → LinkStore.add)
+```
+No new routes, no TV changes. Lands in Phase 2 alongside `api/links/import`, after `PlaylistImport` and `addBatch` exist. The two paths (file upload via POST body, URL-based fetch) share the parse+store logic; only the fetch is new.
+
+### 9.2 StreamResolver — WebView-based extraction (smarter than static regexes)
+The current `extractMediaUrl()` misses JavaScript-rendered embed players (Dailymotion, Streamtape, etc.) because it does static HTML analysis. The static regexes are best-effort and miss the majority of real-world watch pages.
+
+**The right answer on Android is WebView + network request interception:**
+- Load the watch page URL in a WebView
+- Attach a `WebViewClient.shouldInterceptRequest()` override
+- Capture the first request that has a video/audio Content-Type (or a `Range:` header, which media players emit immediately)
+- Return that URL; close the WebView
+
+This runs the real JavaScript exactly as the browser would, and is entirely on-device (no outbound LLM API call). The constraint: WebView needs the UI thread. The implementation is a `StreamResolverActivity` with no visible UI (the existing `serve()` coroutine dispatches to the main thread, waits for a `CompletableDeferred<String>` that the WebView callback completes, then resumes). Falls back to the current static-regex path if WebView yields nothing within a timeout.
+
+**Better UX in the short term (Phase 2, cheap):** add `"resolved":false` to `ApiJson.Link` when `StreamResolver.resolve()` returns `playable=false`. The Links tab shows a warning badge on those entries ("couldn't find direct stream — opens in browser"). Small change, makes the current silent fallback legible to the user without any WebView work. WebView extraction is a follow-on, separate scope.
