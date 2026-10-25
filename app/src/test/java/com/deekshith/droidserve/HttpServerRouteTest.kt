@@ -188,6 +188,46 @@ class HttpServerRouteTest {
         } finally { auth.stop() }
     }
 
+    // ── api/links/import ─────────────────────────────────────────────────────
+
+    @Test fun importPost_validM3u_returns200WithAddedCount() {
+        val m3u = "#EXTM3U\n#EXTINF:-1,Chan A\nrtsp://test/a.ts\n#EXTINF:-1,Chan B\nrtsp://test/b.ts"
+        val c = post("/api/links/import", m3u, "text/plain")
+        assertEquals(200, c.responseCode)
+        val body = c.inputStream.readBytes().toString(Charsets.UTF_8)
+        assertTrue(body.contains("\"added\":2"))
+        assertTrue(body.contains("\"skipped\":0"))
+        c.disconnect()
+    }
+
+    @Test fun importPost_invalidSchemeFiltered_countedAsSkipped() {
+        val m3u = "#EXTM3U\n#EXTINF:-1,Bad\nfile:///etc/passwd\n#EXTINF:-1,Good\nrtsp://test/good.ts"
+        val c = post("/api/links/import", m3u, "text/plain")
+        assertEquals(200, c.responseCode)
+        val body = c.inputStream.readBytes().toString(Charsets.UTF_8)
+        assertTrue("bad-scheme entry must be skipped", body.contains("\"added\":1"))
+        assertTrue(body.contains("\"skipped\":1"))
+        c.disconnect()
+    }
+
+    @Test fun importPost_overContentLength_returns413() {
+        // Use a server with importMaxBytes=10 so a 25-byte body triggers 413 without writing 2 MB.
+        val tiny = startServerWithOptions(ServerOptions(importMaxBytes = 10))
+        try {
+            val c = post("/api/links/import", "more than ten bytes here!!", "text/plain", tiny.listeningPort)
+            assertEquals(413, c.responseCode)
+            c.disconnect()
+        } finally { tiny.stop() }
+    }
+
+    @Test fun importPost_emptyBody_returns200WithZeroAdded() {
+        val c = post("/api/links/import", "", "text/plain")
+        assertEquals(200, c.responseCode)
+        val body = c.inputStream.readBytes().toString(Charsets.UTF_8)
+        assertTrue(body.contains("\"added\":0"))
+        c.disconnect()
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private fun open(
@@ -203,6 +243,26 @@ class HttpServerRouteTest {
         conn.instanceFollowRedirects = false
         headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
         return conn
+    }
+
+    private fun post(path: String, body: String, contentType: String, port: Int = this.port): HttpURLConnection {
+        val conn = URL("http://127.0.0.1:$port$path").openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.doOutput = true
+        conn.connectTimeout = 5_000
+        conn.readTimeout = 5_000
+        conn.instanceFollowRedirects = false
+        conn.setRequestProperty("Content-Type", contentType)
+        val bytes = body.toByteArray(Charsets.UTF_8)
+        conn.setRequestProperty("Content-Length", bytes.size.toString())
+        conn.outputStream.use { it.write(bytes) }
+        return conn
+    }
+
+    private fun startServerWithOptions(opts: ServerOptions): HttpServer {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val uri = Uri.parse("content://com.android.externalstorage.documents/tree/testroot")
+        return HttpServer(ctx, uri, 0, opts).also { it.start() }
     }
 
     private fun basicHeader(user: String, pass: String): String =

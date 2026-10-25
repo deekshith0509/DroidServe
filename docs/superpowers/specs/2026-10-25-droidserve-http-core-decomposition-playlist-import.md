@@ -183,9 +183,12 @@ Small, each justified against a principle already in the roadmap doc — none of
 
 | Phase | Deliverable | Gate to move on |
 |---|---|---|
-| 0 | CI runs unit tests; `HttpServerRouteTest` written against current code | Both green |
+| 0 | CI runs unit tests; `HttpServerRouteTest` boots HttpServer against current code | Both green ✓ (committed 8638b9b) |
 | 1 | `HttpServer.kt` split into focused units, one commit per unit | Wire-compatibility checklist + full suite pass; soak a few days |
-| 2 | `LinkPolicy` + `readCapped` prep; `PlaylistImport.kt`; `LinkStore.addBatch`; `api/links/import` + web entry point + tests | `PlaylistImportTest` + `LinkStoreTest`(addBatch) + extended `HttpServerRouteTest` green; manual TV + web check |
+| 2 | `IoUtils.readCapped`; `PlaylistImport.kt`; `LinkStore.addBatch` + CAP→500; `api/links/import` (POST body + POST ?url= + GET preview) + web entry point + tests | ✓ shipped — 97 tests 0 failures; manual TV + web check pending |
+
+### §9.1 revised: URL-based import uses `api/links/import?url=` (POST), not auto-detect in single-add
+Auto-detecting M3U from `api/links/add` was removed from §9.1 (see §9 below). The shipped design uses an explicit Import section in the web UI: `GET api/links/import/preview?url=` → preview count+sample → `POST api/links/import?url=` → import. No auto-detection, no surprises, clear user intent.
 
 ## 8. Resolved decisions (were open questions)
 

@@ -646,6 +646,18 @@ body.tv,body.tv *{cursor:none!important}
 .lk-del{background:var(--sf2);border:1px solid var(--bd);color:var(--tx);border-radius:7px;width:34px;height:34px;font-size:14px;cursor:pointer;flex-shrink:0}
 .lk-del:hover{border-color:#ef4444;color:#ef4444}
 .lk-empty{color:var(--mu);text-align:center;padding:40px 16px;font-size:14px;line-height:1.5}
+.lk-import{padding:10px 14px 14px;border-top:1px solid var(--bd);background:var(--sf);flex-shrink:0}
+.lk-import-ttl{font-size:11px;color:var(--mu);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em}
+.lk-import-row{display:flex;gap:7px}
+.lk-import-row input[type=url]{flex:1;min-width:0;padding:7px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--tx);font-size:13px}
+.lk-import-row input:focus{outline:none;border-color:var(--ac)}
+.lk-import-file{display:block;font-size:12px;color:var(--mu);cursor:pointer;margin-top:7px}
+.lk-import-file:hover{color:var(--tx)}
+.lk-iinfo{margin-top:8px;font-size:13px}
+.lk-icard{padding:9px 11px;border:1px solid var(--bd);border-radius:8px;background:var(--sf2)}
+.lk-icard .lk-isample{font-size:11px;color:var(--mu);margin-top:3px}
+.lk-icard .lk-ibtns{display:flex;gap:7px;margin-top:8px}
+.lk-row .lk-unresolved{font-size:14px;margin-right:2px;opacity:.85}
 </style></head>
 <body>
 <header>
@@ -689,9 +701,15 @@ body.tv,body.tv *{cursor:none!important}
 <div class="mu-body" id="mubody"></div>
 <div class="mu-bar" id="mubar" style="display:none"><button class="mu-nav" id="muprev">‹</button><audio id="muaudio" controls preload="auto"></audio><button class="mu-nav" id="munext">›</button><span class="mu-now" id="munow"></span></div>
 </div>
-<div class="mu-ov" id="lkov">
+<div class="mu-ov" id="lkov" style="display:flex;flex-direction:column">
 <div class="mu-hd lk-hd"><span class="mu-ttl">🔗 Links</span><input type="url" id="lkin" placeholder="Paste a video / stream URL…" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Streaming URL to send to the TV"><button class="sb" id="lkadd">Send to TV</button><button class="pl-x" id="lkx" title="Close (Esc)">✕</button></div>
-<div class="mu-body" id="lkbody"></div>
+<div class="mu-body" id="lkbody" style="flex:1"></div>
+<div class="lk-import" id="lkimport">
+<div class="lk-import-ttl">📋 Import playlist</div>
+<div class="lk-import-row"><input type="url" id="lkiurl" placeholder="Paste an .m3u playlist URL…" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="M3U playlist URL"><button class="sb" id="lkiprev">Preview</button></div>
+<div id="lkiinfo" class="lk-iinfo"></div>
+<label class="lk-import-file">📂 Or pick a .m3u file from your device <input type="file" id="lkifile" accept=".m3u,.m3u8,audio/x-mpegurl,application/x-mpegurl" style="display:none"></label>
+</div>
 </div>
 <script>
 (function(){
@@ -1013,16 +1031,24 @@ var btn=document.getElementById('lkbtn'),ov=document.getElementById('lkov'),body
 inp=document.getElementById('lkin'),addB=document.getElementById('lkadd');
 if(!btn)return;
 var ver=-1,open=false,polling=false;
+var iurl=document.getElementById('lkiurl'),iprev=document.getElementById('lkiprev'),
+    iinfo=document.getElementById('lkiinfo'),ifile=document.getElementById('lkifile');
 function esc(t){var d=document.createElement('div');d.textContent=t||'';return d.innerHTML;}
-function icon(u){if(/^magnet:/i.test(u))return'🧲';if(/\.(mp3|flac|aac|ogg|wav|m4a|opus)(\?|$)/i.test(u))return'🎵';return'🎬';}
+function icon(u){
+  if(/^magnet:/i.test(u))return'🧲';
+  if(/\.(m3u8?|mpd)(\?|$)/i.test(u))return'📋';
+  if(/\.(mp3|flac|aac|ogg|wav|m4a|opus)(\?|$)/i.test(u))return'🎵';
+  return'🎬';
+}
 function render(d){
 ver=d.version;var links=d.links||[];
 var h='<div class="lk-top"><span class="c">'+links.length+' link'+(links.length!==1?'s':'')+' · shown on your TV</span>';
 if(links.length)h+='<button class="sb" id="lkclr">Clear all</button>';
 h+='</div>';
-if(!links.length)h+='<div class="lk-empty">No links yet.<br>Paste a URL above and it appears on your TV instantly.</div>';
+if(!links.length)h+='<div class="lk-empty">No links yet.<br>Paste a URL above and it appears on your TV instantly.<br>Or import an .m3u playlist below.</div>';
 links.forEach(function(l){
-h+='<div class="lk-row"><span class="lk-i">'+icon(l.url)+'</span><div class="lk-m"><div class="lk-nm">'+esc(l.label)+'</div><div class="lk-u">'+esc(l.url)+'</div></div><button class="lk-del" data-id="'+esc(l.id)+'" aria-label="Remove">✕</button></div>';
+var ico=l.playable===false?'<span class="lk-unresolved" title="No direct stream found — TV will open in browser">⚠️</span>'+icon(l.url):icon(l.url);
+h+='<div class="lk-row"><span class="lk-i">'+ico+'</span><div class="lk-m"><div class="lk-nm">'+esc(l.label)+'</div><div class="lk-u">'+esc(l.url)+'</div></div><button class="lk-del" data-id="'+esc(l.id)+'" aria-label="Remove">✕</button></div>';
 });
 body.innerHTML=h;
 var c=document.getElementById('lkclr');if(c)c.addEventListener('click',function(){api('/api/links/clear');});
@@ -1038,6 +1064,55 @@ document.getElementById('lkx').addEventListener('click',closeOv);
 addB.addEventListener('click',send);
 inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();send();}});
 document.addEventListener('keydown',function(e){if(ov.classList.contains('on')&&e.key==='Escape')closeOv();});
+// ── Import section ────────────────────────────────────────────────────────────
+function setInfo(html){if(iinfo)iinfo.innerHTML=html;}
+function importDone(d){
+  render(d);
+  setInfo('<div style="color:#4ade80">✓ Imported '+d.added+' channel'+(d.added!==1?'s':'')+
+    (d.skipped?' · '+d.skipped+' skipped':'')+' </div>');
+  if(iurl)iurl.value='';
+}
+function importFail(msg){setInfo('<div style="color:#f87171">'+esc(msg||'Import failed')+'</div>');}
+function doImportUrl(u){
+  setInfo('<span style="color:var(--mu)">Importing…</span>');
+  fetch('/api/links/import?url='+encodeURIComponent(u),{method:'POST',credentials:'same-origin',body:''})
+    .then(function(r){return r.ok?r.json():Promise.reject(r.status===413?'Playlist too large':'Could not import');})
+    .then(importDone).catch(importFail);
+}
+function doImportText(text){
+  setInfo('<span style="color:var(--mu)">Importing…</span>');
+  fetch('/api/links/import',{method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'text/plain;charset=utf-8'},body:text})
+    .then(function(r){return r.ok?r.json():Promise.reject(r.status===413?'Playlist too large':'Could not import');})
+    .then(importDone).catch(importFail);
+}
+function previewUrl(){
+  var u=(iurl?iurl.value||'':'').trim();if(!u)return;
+  setInfo('<span style="color:var(--mu)">Fetching…</span>');
+  fetch('/api/links/import/preview?url='+encodeURIComponent(u),{credentials:'same-origin'})
+    .then(function(r){return r.ok?r.json():Promise.reject('Could not fetch playlist');})
+    .then(function(d){
+      var s=d.sample&&d.sample.length?' · e.g. '+d.sample.map(function(t){return esc(t);}).join(', '):'';
+      setInfo('<div class="lk-icard">'+d.count+' channel'+(d.count!==1?'s':'')+' found'+
+        '<div class="lk-isample">'+s+'</div>'+
+        '<div class="lk-ibtns">'+
+        '<button class="sb" id="lkiok">Import all</button>'+
+        '<button class="sb" style="background:var(--sf2);color:var(--tx)" id="lkino">Cancel</button>'+
+        '</div></div>');
+      var ok=document.getElementById('lkiok'),no=document.getElementById('lkino');
+      if(ok)ok.addEventListener('click',function(){doImportUrl(u);});
+      if(no)no.addEventListener('click',function(){setInfo('');});
+    }).catch(function(e){importFail(typeof e==='string'?e:'Could not fetch playlist');});
+}
+if(iprev)iprev.addEventListener('click',previewUrl);
+if(iurl)iurl.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();previewUrl();}});
+if(ifile)ifile.addEventListener('change',function(){
+  var f=ifile.files&&ifile.files[0];if(!f)return;
+  var rd=new FileReader();
+  rd.onload=function(){doImportText(rd.result);};
+  rd.readAsText(f,'utf-8');
+  ifile.value='';
+});
 // Live updates via long-poll while the tab is open (stops as soon as it closes).
 function poll(){if(polling)return;polling=true;(function loop(){
 if(!open){polling=false;return;}

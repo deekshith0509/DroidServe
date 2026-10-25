@@ -91,14 +91,4 @@ object StreamResolver {
             setRequestProperty("Accept", "text/html,*/*")
         }
 
-    private fun readCapped(input: java.io.InputStream, max: Int): String {
-        val buf = ByteArray(max)
-        var total = 0
-        while (total < max) {
-            val n = input.read(buf, total, max - total)
-            if (n < 0) break
-            total += n
-        }
-        return String(buf, 0, total, Charsets.UTF_8)
-    }
 }

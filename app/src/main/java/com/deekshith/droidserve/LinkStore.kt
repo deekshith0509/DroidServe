@@ -17,7 +17,7 @@ object LinkStore {
 
     data class Link(val id: String, val url: String, val label: String, val addedAt: Long, val playable: Boolean = true)
 
-    private const val CAP = 200
+    private const val CAP = 500
     private val lock = java.lang.Object()
     private val links = ArrayList<Link>()   // newest first
     private var version = 0
@@ -46,6 +46,23 @@ object LinkStore {
             while (links.size > CAP) links.removeAt(links.size - 1)
             bump()
         }
+        version to ArrayList(links)
+    }
+
+    /**
+     * Add many URLs at once: one lock acquisition, one evict, one persist, one long-poll wake-up.
+     * Looping [add] N times would cause N full-file rewrites and bump the version N times.
+     * [group] from playlist entries is intentionally not stored — no group UI exists yet.
+     */
+    fun addBatch(items: List<Pair<String, String?>>): Pair<Int, List<Link>> = synchronized(lock) {
+        for ((url, label) in items) {
+            val clean = sanitize(url); if (clean.isEmpty()) continue
+            links.removeAll { it.url == clean }
+            val lbl = sanitize(label.orEmpty()).ifEmpty { sanitize(labelFor(clean)) }.ifEmpty { clean.take(60) }
+            links.add(0, Link(nextId(), clean, lbl, System.currentTimeMillis(), true))
+        }
+        while (links.size > CAP) links.removeAt(links.size - 1)
+        if (items.isNotEmpty()) bump()
         version to ArrayList(links)
     }
 
