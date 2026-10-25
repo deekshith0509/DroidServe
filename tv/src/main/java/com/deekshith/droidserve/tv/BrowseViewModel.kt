@@ -142,6 +142,13 @@ sealed interface UiScreen {
         val loading: Boolean = false,
         val error: String? = null
     ) : UiScreen
+
+    /** Channels of one auto-expanded playlist group, drilled into from [Links]. */
+    data class LinkGroup(
+        val server: DiscoveredServer,
+        val group: String,
+        val links: List<StreamLink>
+    ) : UiScreen
 }
 
 class BrowseViewModel(app: Application) : AndroidViewModel(app) {
@@ -486,8 +493,18 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Drill into one playlist group's channels. Called from the Links screen. */
+    fun openLinkGroup(group: String) {
+        val server = (_screen.value as? UiScreen.Links)?.server ?: return
+        _screen.value = UiScreen.LinkGroup(server, group, streamLinks.filter { it.group == group })
+    }
+
     private fun pushLinks() {
-        (_screen.value as? UiScreen.Links)?.let { _screen.value = it.copy(links = streamLinks, loading = false) }
+        when (val s = _screen.value) {
+            is UiScreen.Links -> _screen.value = s.copy(links = streamLinks, loading = false)
+            is UiScreen.LinkGroup -> _screen.value = s.copy(links = streamLinks.filter { it.group == s.group })
+            else -> {}
+        }
     }
 
     /**
@@ -658,6 +675,10 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
             }
             is UiScreen.Links -> {
                 _screen.value = render(cur.server, currentPath, "", SortMode.DEFAULT)
+                return true
+            }
+            is UiScreen.LinkGroup -> {
+                _screen.value = UiScreen.Links(cur.server, streamLinks, loading = false)
                 return true
             }
             is UiScreen.ApkInstall -> {

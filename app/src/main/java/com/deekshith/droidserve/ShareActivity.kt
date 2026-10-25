@@ -25,11 +25,14 @@ class ShareActivity : Activity() {
         runCatching { LinkStore.attach(File(filesDir, "links.tsv")) }
         Toast.makeText(this, "Sending to TV…", Toast.LENGTH_SHORT).show()
         Thread {
-            val r = runCatching { StreamResolver.resolve(url) }
-                .getOrDefault(StreamResolver.Resolved(url, null, true))
-            LinkStore.add(r.url, r.title, r.playable)
+            val res = LinkIngest.ingest(url)
             runOnUiThread {
-                Toast.makeText(this, if (r.playable) "Sent to TV ✓" else "Added to TV links", Toast.LENGTH_SHORT).show()
+                val msg = when {
+                    res.group != null -> "Sent ${res.added} channels to TV ✓"
+                    res.playable      -> "Sent to TV ✓"
+                    else              -> "Added to TV links"
+                }
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
                 finish()
             }
         }.start()

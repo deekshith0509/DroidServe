@@ -558,13 +558,13 @@ private fun SendToTvCard(isRunning: Boolean, snackbar: SnackbarHostState, scope:
         if (u.isEmpty() || sending) return
         sending = true
         scope.launch {
-            val res = withContext(Dispatchers.IO) {
-                val r = StreamResolver.resolve(u)
-                LinkStore.add(r.url, r.title, r.playable)
-                r
-            }
+            val res = withContext(Dispatchers.IO) { LinkIngest.ingest(u) }
             urlText = ""; sending = false; refresh++
-            snackbar.showSnackbar(if (res.playable) "Sent to TV ✓" else "Added — opens in a browser on the TV")
+            snackbar.showSnackbar(when {
+                res.group != null -> "Sent ${res.added} channels to TV ✓"
+                res.playable      -> "Sent to TV ✓"
+                else              -> "Added — opens in a browser on the TV"
+            })
         }
     }
 

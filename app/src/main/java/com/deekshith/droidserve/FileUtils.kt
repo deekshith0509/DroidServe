@@ -658,6 +658,10 @@ body.tv,body.tv *{cursor:none!important}
 .lk-icard .lk-isample{font-size:11px;color:var(--mu);margin-top:3px}
 .lk-icard .lk-ibtns{display:flex;gap:7px;margin-top:8px}
 .lk-row .lk-unresolved{font-size:14px;margin-right:2px;opacity:.85}
+.lk-grp{display:flex;align-items:center;gap:12px;padding:11px 12px;border:1px solid var(--bd);border-radius:10px;background:var(--sf2);margin-bottom:6px;cursor:pointer}
+.lk-grp .lk-i{font-size:20px;flex-shrink:0}.lk-grp .lk-nm{flex:1;min-width:0;font-size:14px;color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lk-grp .lk-ct{font-size:11px;color:var(--mu);flex-shrink:0}
+.lk-gbody{margin:0 0 6px 16px}
 </style></head>
 <body>
 <header>
@@ -702,7 +706,7 @@ body.tv,body.tv *{cursor:none!important}
 <div class="mu-bar" id="mubar" style="display:none"><button class="mu-nav" id="muprev">‹</button><audio id="muaudio" controls preload="auto"></audio><button class="mu-nav" id="munext">›</button><span class="mu-now" id="munow"></span></div>
 </div>
 <div class="mu-ov" id="lkov" style="display:flex;flex-direction:column">
-<div class="mu-hd lk-hd"><span class="mu-ttl">🔗 Links</span><input type="url" id="lkin" placeholder="Paste a video / stream URL…" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Streaming URL to send to the TV"><button class="sb" id="lkadd">Send to TV</button><button class="pl-x" id="lkx" title="Close (Esc)">✕</button></div>
+<div class="mu-hd lk-hd"><span class="mu-ttl">🔗 Links</span><input type="url" id="lkin" placeholder="Paste a video, stream, or .m3u playlist URL…" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Streaming URL to send to the TV"><button class="sb" id="lkadd">Send to TV</button><button class="pl-x" id="lkx" title="Close (Esc)">✕</button></div>
 <div class="mu-body" id="lkbody" style="flex:1"></div>
 <div class="lk-import" id="lkimport">
 <div class="lk-import-ttl">📋 Import playlist</div>
@@ -1040,18 +1044,28 @@ function icon(u){
   if(/\.(mp3|flac|aac|ogg|wav|m4a|opus)(\?|$)/i.test(u))return'🎵';
   return'🎬';
 }
+function rowHtml(l){
+var ico=l.playable===false?'<span class="lk-unresolved" title="No direct stream found — TV will open in browser">⚠️</span>'+icon(l.url):icon(l.url);
+return '<div class="lk-row"><span class="lk-i">'+ico+'</span><div class="lk-m"><div class="lk-nm">'+esc(l.label)+'</div><div class="lk-u">'+esc(l.url)+'</div></div><button class="lk-del" data-id="'+esc(l.id)+'" aria-label="Remove">✕</button></div>';
+}
 function render(d){
 ver=d.version;var links=d.links||[];
-var h='<div class="lk-top"><span class="c">'+links.length+' link'+(links.length!==1?'s':'')+' · shown on your TV</span>';
+// Split into named playlist groups (one drill-in row each) + standalone links.
+var groups={},order=[],singles=[];
+links.forEach(function(l){if(l.group){if(!groups[l.group]){groups[l.group]=[];order.push(l.group);}groups[l.group].push(l);}else singles.push(l);});
+var count=singles.length+order.length;
+var h='<div class="lk-top"><span class="c">'+count+' item'+(count!==1?'s':'')+' · shown on your TV</span>';
 if(links.length)h+='<button class="sb" id="lkclr">Clear all</button>';
 h+='</div>';
-if(!links.length)h+='<div class="lk-empty">No links yet.<br>Paste a URL above and it appears on your TV instantly.<br>Or import an .m3u playlist below.</div>';
-links.forEach(function(l){
-var ico=l.playable===false?'<span class="lk-unresolved" title="No direct stream found — TV will open in browser">⚠️</span>'+icon(l.url):icon(l.url);
-h+='<div class="lk-row"><span class="lk-i">'+ico+'</span><div class="lk-m"><div class="lk-nm">'+esc(l.label)+'</div><div class="lk-u">'+esc(l.url)+'</div></div><button class="lk-del" data-id="'+esc(l.id)+'" aria-label="Remove">✕</button></div>';
+if(!links.length)h+='<div class="lk-empty">No links yet.<br>Paste any video, stream, or .m3u playlist URL above — it appears on your TV instantly.<br>Playlists expand into a channel group automatically.</div>';
+order.forEach(function(g,i){var mem=groups[g];
+h+='<div class="lk-grp" data-g="'+i+'"><span class="lk-i">📺</span><span class="lk-nm">'+esc(g)+'</span><span class="lk-ct">'+mem.length+' channels ▸</span></div>';
+h+='<div class="lk-gbody" id="lkg'+i+'" style="display:none">'+mem.map(rowHtml).join('')+'</div>';
 });
+singles.forEach(function(l){h+=rowHtml(l);});
 body.innerHTML=h;
 var c=document.getElementById('lkclr');if(c)c.addEventListener('click',function(){api('/api/links/clear');});
+Array.prototype.forEach.call(body.querySelectorAll('.lk-grp'),function(gh){gh.addEventListener('click',function(){var b=document.getElementById('lkg'+gh.dataset.g);if(!b)return;var open=b.style.display!=='none';b.style.display=open?'none':'';var ct=gh.querySelector('.lk-ct');ct.textContent=ct.textContent.replace(open?'▾':'▸',open?'▸':'▾');});});
 Array.prototype.forEach.call(body.querySelectorAll('.lk-del'),function(b){b.addEventListener('click',function(){api('/api/links/remove?id='+encodeURIComponent(b.dataset.id));});});
 }
 function api(u){return fetch(u,{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}).then(function(d){if(d)render(d);}).catch(function(){});}

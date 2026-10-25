@@ -77,7 +77,9 @@ data class StreamLink(
     val label: String,
     val addedAt: Long,
     /** True = a direct stream (open in a video player); false = a web page (open in a browser). */
-    val playable: Boolean = true
+    val playable: Boolean = true,
+    /** Non-null when this link is one channel of an auto-expanded playlist group. */
+    val group: String? = null
 )
 
 /** A real-time command pushed from the phone (controller) to this TV (player). */

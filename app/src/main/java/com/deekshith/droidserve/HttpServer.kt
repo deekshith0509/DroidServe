@@ -121,9 +121,6 @@ class HttpServer(
         private val INLINE_PREFIXES = arrayOf("image/", "video/", "audio/", "text/")
         private const val INLINE_PDF = "application/pdf"
 
-        // Schemes accepted by the phone -> TV streaming-links relay.
-        private val LINK_SCHEME = Regex("^(https?|rtsps?|rtmps?|mms|ftp|magnet):", RegexOption.IGNORE_CASE)
-
         // SAF projection — declared once, reused everywhere
         private val SAF_PROJECTION = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -281,7 +278,9 @@ class HttpServer(
             }
             val parsed = PlaylistImport.parse(body, options.importMaxEntries * 2)
             val kept   = parsed.filter { isAllowedLink(it.url) }.take(options.importMaxEntries)
-            val (v, list) = LinkStore.addBatch(kept.map { it.url to it.title })
+            // Group the imported channels so the TV shows them as one drill-in list, not a flood.
+            val grp = if (!urlParam.isNullOrEmpty()) LinkIngest.groupNameFor(urlParam) else "Imported playlist"
+            val (v, list) = LinkStore.addBatch(kept.map { it.url to it.title }, grp)
             return ck(jsonResponse(ApiJson.importResult(v, list, kept.size, parsed.size - kept.size)))
         }
 
@@ -408,11 +407,11 @@ class HttpServer(
                     ServerStateHolder.incrementRequests()
                     val url = params["url"]?.firstOrNull()?.trim().orEmpty()
                     if (!isAllowedLink(url)) return errJson(Response.Status.BAD_REQUEST, "Invalid or unsupported URL")
-                    // Resolve watch/embed pages to the direct media URL so the TV's player gets a
-                    // real stream (an HTML page would just bounce the player straight back out).
-                    val r = StreamResolver.resolve(url)
-                    val (v, list) = LinkStore.add(r.url, r.title, r.playable)
-                    return cookie(jsonResponse(ApiJson.links(v, list)))
+                    // Fetch + classify once: a watch/embed page resolves to its direct stream, and a
+                    // multi-channel .m3u auto-expands into a named channel group — the user never has
+                    // to choose "single link vs. playlist import".
+                    val res = LinkIngest.ingest(url, options.importMaxEntries)
+                    return cookie(jsonResponse(ApiJson.links(res.version, res.links)))
                 }
                 "api/links/remove" -> {
                     ServerStateHolder.incrementRequests()
@@ -705,8 +704,7 @@ class HttpServer(
 
     // Accept only URLs a media player / torrent client / browser can actually open. Keeps the
     // relay from being turned into a store for arbitrary junk, without trying to validate reach.
-    private fun isAllowedLink(url: String): Boolean =
-        url.isNotEmpty() && LINK_SCHEME.containsMatchIn(url)
+    private fun isAllowedLink(url: String): Boolean = isSupportedLink(url)
 
     // Allowed thumbnail widths — bounds the number of cached variants per file.
     private fun clampThumbW(raw: String?): Int = when (raw?.toIntOrNull()) {
