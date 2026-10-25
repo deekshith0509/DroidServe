@@ -15,7 +15,7 @@ import java.io.File
  */
 object LinkStore {
 
-    data class Link(val id: String, val url: String, val label: String, val addedAt: Long, val playable: Boolean = true, val group: String? = null)
+    data class Link(val id: String, val url: String, val label: String, val addedAt: Long, val playable: Boolean = true, val group: String? = null, val logo: String? = null)
 
     private const val CAP = Int.MAX_VALUE   // no entry cap — a playlist imports in full
     private val lock = java.lang.Object()
@@ -52,15 +52,16 @@ object LinkStore {
     /**
      * Add many URLs at once: one lock acquisition, one evict, one persist, one long-poll wake-up.
      * Looping [add] N times would cause N full-file rewrites and bump the version N times.
-     * [group] from playlist entries is intentionally not stored — no group UI exists yet.
+     * Each item is (url, label, logo); [group] is the shared playlist name.
      */
-    fun addBatch(items: List<Pair<String, String?>>, group: String? = null): Pair<Int, List<Link>> = synchronized(lock) {
+    fun addBatch(items: List<Triple<String, String?, String?>>, group: String? = null): Pair<Int, List<Link>> = synchronized(lock) {
         val grp = group?.let { sanitize(it) }?.ifEmpty { null }
-        for ((url, label) in items) {
+        for ((url, label, logo) in items) {
             val clean = sanitize(url); if (clean.isEmpty()) continue
             links.removeAll { it.url == clean }
             val lbl = sanitize(label.orEmpty()).ifEmpty { sanitize(labelFor(clean)) }.ifEmpty { clean.take(60) }
-            links.add(0, Link(nextId(), clean, lbl, System.currentTimeMillis(), true, grp))
+            val lg = logo?.let { sanitize(it) }?.ifEmpty { null }
+            links.add(0, Link(nextId(), clean, lbl, System.currentTimeMillis(), true, grp, lg))
         }
         while (links.size > CAP) links.removeAt(links.size - 1)
         if (items.isNotEmpty()) bump()
@@ -102,7 +103,7 @@ object LinkStore {
     private fun persist() {
         val f = file ?: return
         runCatching {
-            f.writeText(links.joinToString("\n") { "${it.addedAt}\t${it.id}\t${it.url}\t${it.label}\t${if (it.playable) 1 else 0}\t${it.group ?: ""}" })
+            f.writeText(links.joinToString("\n") { "${it.addedAt}\t${it.id}\t${it.url}\t${it.label}\t${if (it.playable) 1 else 0}\t${it.group ?: ""}\t${it.logo ?: ""}" })
         }
     }
 
@@ -111,10 +112,11 @@ object LinkStore {
         runCatching {
             if (!f.exists()) return@runCatching
             for (line in f.readLines()) {
-                val p = line.split('\t', limit = 6)
+                val p = line.split('\t', limit = 7)
                 if (p.size >= 4) {
                     val group = if (p.size >= 6) p[5].ifEmpty { null } else null
-                    links.add(Link(p[1], p[2], p[3], p[0].toLongOrNull() ?: 0L, if (p.size >= 5) p[4] == "1" else true, group))
+                    val logo = if (p.size >= 7) p[6].ifEmpty { null } else null
+                    links.add(Link(p[1], p[2], p[3], p[0].toLongOrNull() ?: 0L, if (p.size >= 5) p[4] == "1" else true, group, logo))
                     p[1].substringAfterLast('_').toLongOrNull()?.let { if (it >= counter) counter = it + 1 }
                 }
             }

@@ -13,12 +13,13 @@ package com.deekshith.droidserve
  */
 object PlaylistImport {
 
-    data class Entry(val url: String, val title: String, val group: String?)
+    data class Entry(val url: String, val title: String, val group: String?, val logo: String? = null)
 
     fun parse(text: String, max: Int = Int.MAX_VALUE): List<Entry> {
         val out = ArrayList<Entry>()
         var title: String? = null
         var group: String? = null
+        var logo: String? = null
         for (raw in text.lineSequence()) {
             if (out.size >= max) break
             val line = raw.trim()
@@ -26,12 +27,13 @@ object PlaylistImport {
             when {
                 line.startsWith("#EXTINF", ignoreCase = true) -> {
                     group = Regex("""group-title="([^"]*)"""").find(line)?.groupValues?.get(1)
+                    logo = Regex("""tvg-logo="([^"]*)"""").find(line)?.groupValues?.get(1)?.trim()?.ifEmpty { null }
                     title = line.substringAfterLast(',').trim().ifEmpty { null }
                 }
                 line.startsWith("#") -> {}
                 else -> {
-                    out.add(Entry(line, title ?: line.take(60), group))
-                    title = null; group = null
+                    out.add(Entry(line, title ?: line.take(60), group, logo))
+                    title = null; group = null; logo = null
                 }
             }
         }

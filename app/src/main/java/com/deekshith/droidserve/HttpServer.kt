@@ -280,7 +280,7 @@ class HttpServer(
             val kept   = parsed.filter { isAllowedLink(it.url) }
             // Group the imported channels so the TV shows them as one drill-in list, not a flood.
             val grp = if (!urlParam.isNullOrEmpty()) LinkIngest.groupNameFor(urlParam) else "Imported playlist"
-            val (v, list) = LinkStore.addBatch(kept.map { it.url to it.title }, grp)
+            val (v, list) = LinkStore.addBatch(kept.map { Triple(it.url, it.title, it.logo) }, grp)
             return ck(jsonResponse(ApiJson.importResult(v, list, kept.size, parsed.size - kept.size)))
         }
 

@@ -196,15 +196,17 @@ fun DsTextField(
 
 /** Thumbnail tile: paints the cached bitmap instantly, loads off-main, falls back to a type icon. */
 @Composable
-fun Thumb(url: String?, fallback: ImageVector, modifier: Modifier = Modifier, fallbackTint: Color = DsColor.Muted, iconSize: Dp = 28.dp) {
+fun Thumb(url: String?, fallback: ImageVector, modifier: Modifier = Modifier, fallbackTint: Color = DsColor.Muted, iconSize: Dp = 28.dp, contentScale: ContentScale = ContentScale.Crop) {
     var bmp by remember(url) { mutableStateOf(url?.let { ThumbLoader.cached(it) }) }
-    LaunchedEffect(url) { if (url != null && bmp == null) bmp = ThumbLoader.load(url) }
+    var failed by remember(url) { mutableStateOf(false) }
+    LaunchedEffect(url) { if (url != null && bmp == null) { bmp = ThumbLoader.load(url); if (bmp == null) failed = true } }
     Box(
         modifier.background(Brush.verticalGradient(listOf(DsColor.Ink3, DsColor.Ink2))),
         contentAlignment = Alignment.Center,
     ) {
         val b = bmp
-        if (b != null) Image(b.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        // Logos (transparent PNGs, varied aspect) pass ContentScale.Fit; icon fallback on null/decode-fail.
+        if (b != null) Image(b.asImageBitmap(), null, Modifier.fillMaxSize().padding(if (contentScale == ContentScale.Fit) 6.dp else 0.dp), contentScale = contentScale)
         else DsIcon(fallback, tint = fallbackTint, size = iconSize)
     }
 }
@@ -343,6 +345,7 @@ fun MediaTile(
     fallbackIcon: ImageVector,
     aspect: Float,
     modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
     onClick: () -> Unit,
 ) {
     FocusContainer(onClick = onClick, modifier = modifier, shape = RoundedCornerShape(DsDim.RadiusCard)) { focused ->
@@ -352,6 +355,7 @@ fun MediaTile(
                 Modifier.fillMaxWidth().aspectRatio(aspect),
                 fallbackTint = if (focused) DsColor.Amber else DsColor.Muted,
                 iconSize = 38.dp,
+                contentScale = contentScale,
             )
             Column(Modifier.padding(10.dp)) {
                 Text(title, style = DsType.Item.copy(fontSize = 13.sp, lineHeight = 17.sp), maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -428,4 +432,25 @@ fun ContextMenu(title: String, actions: List<ContextAction>, onDismiss: () -> Un
         }
     }
     InitialFocus(first, true, title, actions.size)
+}
+
+/**
+ * Thin right-edge scroll indicator for a native-TV feel. Call inside a [BoxScope] that wraps the
+ * scroll container, passing item counts from a Lazy*State. Hidden when nothing overflows; purely
+ * decorative (never focusable).
+ */
+@Composable
+fun BoxScope.VScrollbar(total: Int, visible: Int, first: Int) {
+    if (total <= 0 || visible >= total) return
+    val thumb = (visible.toFloat() / total).coerceIn(0.06f, 1f)
+    val off = (first.toFloat() / total).coerceIn(0f, 1f - thumb)
+    val rest = 1f - off - thumb
+    Column(
+        Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(vertical = 6.dp).width(4.dp)
+            .clip(RoundedCornerShape(2.dp)).background(DsColor.Line.copy(alpha = 0.35f)),
+    ) {
+        if (off > 0f) Spacer(Modifier.weight(off))
+        Box(Modifier.weight(thumb).fillMaxWidth().clip(RoundedCornerShape(2.dp)).background(DsColor.Muted.copy(alpha = 0.7f)))
+        if (rest > 0f) Spacer(Modifier.weight(rest))
+    }
 }

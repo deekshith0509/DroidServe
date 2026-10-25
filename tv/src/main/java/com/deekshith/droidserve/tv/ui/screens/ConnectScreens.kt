@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -55,6 +57,7 @@ import com.deekshith.droidserve.tv.ui.InitialFocus
 import com.deekshith.droidserve.tv.ui.MediaTile
 import com.deekshith.droidserve.tv.ui.NavChip
 import com.deekshith.droidserve.tv.ui.PrimaryButton
+import com.deekshith.droidserve.tv.ui.VScrollbar
 import com.deekshith.droidserve.tv.ui.iconForLink
 import com.deekshith.droidserve.tv.ui.onMenuKey
 
@@ -97,9 +100,13 @@ fun DiscoveryScreen(
     onPlayChannel: (StreamLink) -> Unit,
     onRemovePlaylist: (String) -> Unit,
     onRemoveChannel: (String) -> Unit,
+    onSaveChannel: (StreamLink) -> Unit,
+    isChannelSaved: (String) -> Boolean,
+    onToggleShowAll: () -> Unit,
 ) {
     val firstFocus = remember { FocusRequester() }
     val searchFocus = remember { FocusRequester() }
+    val gridState = rememberLazyGridState()
     var searchOpen by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var focusedPlaylist by remember { mutableStateOf<String?>(null) }
@@ -118,6 +125,7 @@ fun DiscoveryScreen(
         },
     ) {
         LazyVerticalGrid(
+            state = gridState,
             columns = GridCells.Adaptive(densityTileMin(GridDensity.intValue)),
             horizontalArrangement = Arrangement.spacedBy(DsDim.Gutter),
             verticalArrangement = Arrangement.spacedBy(DsDim.Gutter),
@@ -128,7 +136,11 @@ fun DiscoveryScreen(
                 Column {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text("DroidServe", style = DsType.Hero, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (hasSaved) NavChip("Search", DsIcons.Search, active = searchOpen) { searchOpen = !searchOpen }
+                        if (hasSaved) {
+                            NavChip("Search", DsIcons.Search, active = searchOpen) { searchOpen = !searchOpen }
+                            Spacer(Modifier.width(8.dp))
+                            NavChip(if (state.showAll) "Grouped" else "All", DsIcons.Grid, active = state.showAll) { onToggleShowAll() }
+                        }
                     }
                     Spacer(Modifier.height(6.dp))
                     Text("Pick a phone running DroidServe, or open something you saved", style = DsType.Body.copy(color = DsColor.Muted))
@@ -175,37 +187,54 @@ fun DiscoveryScreen(
                 }
             }
 
-            if (playlists.isNotEmpty()) {
-                item(span = { GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(22.dp)); SectionLabel("Playlists") }
-                items(playlists.size, key = { "pl:" + playlists[it].name }) { i ->
-                    val p = playlists[i]
-                    val mod = Modifier
-                        .onFocusChanged { if (it.hasFocus) { focusedPlaylist = p.name; focusedChannel = null } }
-                        .then(if (i == 0 && focusFirstPlaylist) Modifier.focusRequester(firstFocus) else Modifier)
-                    MediaTile(p.name, "${p.channels.size} links", null, DsIcons.ListView, 16f / 10f, mod) { onOpenPlaylist(p) }
+            if (state.showAll) {
+                val all = state.allLinks
+                if (all.isNotEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(22.dp)); SectionLabel("All links") }
+                    items(all.size, key = { "all:" + all[it].link.id }) { i ->
+                        val hit = all[i]
+                        val c = hit.link
+                        val mod = Modifier
+                            .onFocusChanged { if (it.hasFocus) { focusedChannel = hit; focusedPlaylist = null } }
+                            .then(if (i == 0 && !serversPresent) Modifier.focusRequester(firstFocus) else Modifier)
+                        MediaTile(c.label, hit.from?.let { "In $it" } ?: "Link", c.logo, iconForLink(c.url), 16f / 10f, mod, ContentScale.Fit) { onPlayChannel(c) }
+                    }
                 }
-            }
-
-            if (channels.isNotEmpty()) {
-                item(span = { GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(22.dp)); SectionLabel("Links") }
-                items(channels.size, key = { "ch:" + channels[it].link.id }) { i ->
-                    val hit = channels[i]
-                    val c = hit.link
-                    val mod = Modifier
-                        .onFocusChanged { if (it.hasFocus) { focusedChannel = hit; focusedPlaylist = null } }
-                        .then(if (i == 0 && focusFirstChannel) Modifier.focusRequester(firstFocus) else Modifier)
-                    MediaTile(c.label, hit.from?.let { "In $it" } ?: "Link", null, iconForLink(c.url), 16f / 10f, mod) { onPlayChannel(c) }
+            } else {
+                if (playlists.isNotEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(22.dp)); SectionLabel("Playlists") }
+                    items(playlists.size, key = { "pl:" + playlists[it].name }) { i ->
+                        val p = playlists[i]
+                        val mod = Modifier
+                            .onFocusChanged { if (it.hasFocus) { focusedPlaylist = p.name; focusedChannel = null } }
+                            .then(if (i == 0 && focusFirstPlaylist) Modifier.focusRequester(firstFocus) else Modifier)
+                        MediaTile(p.name, "${p.channels.size} links", null, DsIcons.ListView, 16f / 10f, mod) { onOpenPlaylist(p) }
+                    }
+                }
+                if (channels.isNotEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(22.dp)); SectionLabel("Links") }
+                    items(channels.size, key = { "ch:" + channels[it].link.id }) { i ->
+                        val hit = channels[i]
+                        val c = hit.link
+                        val mod = Modifier
+                            .onFocusChanged { if (it.hasFocus) { focusedChannel = hit; focusedPlaylist = null } }
+                            .then(if (i == 0 && focusFirstChannel) Modifier.focusRequester(firstFocus) else Modifier)
+                        MediaTile(c.label, hit.from?.let { "In $it" } ?: "Link", c.logo, iconForLink(c.url), 16f / 10f, mod, ContentScale.Fit) { onPlayChannel(c) }
+                    }
                 }
             }
         }
+        VScrollbar(gridState.layoutInfo.totalItemsCount, gridState.layoutInfo.visibleItemsInfo.size, gridState.firstVisibleItemIndex)
 
         if (menuOpen) {
             val title = focusedPlaylist ?: focusedChannel?.link?.label ?: ""
             val actions = buildList {
                 focusedPlaylist?.let { n -> add(ContextAction("Remove from saved", DsIcons.Warning, destructive = true) { onRemovePlaylist(n) }) }
                 focusedChannel?.let { hit ->
-                    if (hit.from == null) add(ContextAction("Remove from saved", DsIcons.Warning, destructive = true) { onRemoveChannel(hit.link.id) })
-                    else state.savedPlaylists.firstOrNull { it.name == hit.from }?.let { p -> add(ContextAction("Open ${hit.from}", DsIcons.ListView) { onOpenPlaylist(p) }) }
+                    val l = hit.link
+                    if (isChannelSaved(l.id)) add(ContextAction("Remove link from Home", DsIcons.Warning, destructive = true) { onRemoveChannel(l.id) })
+                    else add(ContextAction("Save link to Home", DsIcons.Link) { onSaveChannel(l) })
+                    hit.from?.let { fromName -> state.savedPlaylists.firstOrNull { it.name == fromName }?.let { p -> add(ContextAction("Open $fromName", DsIcons.ListView) { onOpenPlaylist(p) }) } }
                 }
             }
             if (actions.isNotEmpty()) ContextMenu(title, actions) { menuOpen = false } else menuOpen = false

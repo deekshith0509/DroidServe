@@ -70,7 +70,7 @@ class LinkStoreTest {
     @Test fun addBatch_addsAllItemsAndSingleVersionBump() {
         LinkStore.clear()
         val before = LinkStore.snapshot().first
-        val items = (1..5).map { "rtsp://host/ch$it.ts" to "Channel $it" }
+        val items = (1..5).map { Triple("rtsp://host/ch$it.ts", "Channel $it", null) }
         val (v, list) = LinkStore.addBatch(items)
         assertEquals(5, list.size)
         assertEquals("version must increment by exactly 1", before + 1, v)
@@ -88,7 +88,7 @@ class LinkStoreTest {
 
     @Test fun addBatch_dedupsWithinBatch() {
         LinkStore.clear()
-        val items = listOf("rtsp://host/ch.ts" to "A", "rtsp://host/ch.ts" to "B")
+        val items = listOf(Triple("rtsp://host/ch.ts", "A", null), Triple("rtsp://host/ch.ts", "B", null))
         val (_, list) = LinkStore.addBatch(items)
         assertEquals("duplicate URL within batch keeps only latest", 1, list.size)
         assertEquals("B", list[0].label)
@@ -97,10 +97,10 @@ class LinkStoreTest {
     @Test fun addBatch_keepsEverything_noCap() {
         LinkStore.clear()
         // A large playlist imports in full — no entry cap / no eviction.
-        val seed = (1..13000).map { "rtsp://pre/ch$it.ts" to "Pre$it" }
+        val seed = (1..13000).map { Triple("rtsp://pre/ch$it.ts", "Pre$it", null) }
         LinkStore.addBatch(seed)
         assertEquals(13000, LinkStore.snapshot().second.size)
-        val extra = (1..20).map { "rtsp://new/ch$it.ts" to "New$it" }
+        val extra = (1..20).map { Triple("rtsp://new/ch$it.ts", "New$it", null) }
         val (_, list) = LinkStore.addBatch(extra)
         assertEquals("no cap — all kept", 13020, list.size)
         for (i in 20 downTo 1) assertTrue("New$i should be in list", list.any { it.label == "New$i" })
@@ -114,11 +114,12 @@ class LinkStoreTest {
 
     @Test fun addBatch_withGroup_tagsEveryItemAndSerializes() {
         LinkStore.clear()
-        val items = (1..3).map { "rtsp://host/ch$it.ts" to "Ch$it" }
+        val items = (1..3).map { Triple("rtsp://host/ch$it.ts", "Ch$it", "http://logo/$it.png") }
         val (v, list) = LinkStore.addBatch(items, group = "My IPTV")
         assertTrue(list.all { it.group == "My IPTV" })
         val arr = JSONObject(ApiJson.links(v, list)).getJSONArray("links")
         assertEquals("My IPTV", arr.getJSONObject(0).getString("group"))
+        assertEquals("http://logo/3.png", arr.getJSONObject(0).getString("logo"))  // newest-first
     }
 
     @Test fun add_singleLink_hasNoGroupKey() {

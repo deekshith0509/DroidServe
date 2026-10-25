@@ -42,9 +42,18 @@ sealed interface UiScreen {
         val scanning: Boolean = false,
         val savedPlaylists: List<SavedPlaylist> = emptyList(),
         val savedChannels: List<StreamLink> = emptyList(),
-        val filter: String = ""
+        val filter: String = "",
+        val showAll: Boolean = false
     ) : UiScreen {
         private val f get() = filter.trim().lowercase()
+        // Flat "All" view: every link (standalone + inside every playlist), each tagged with its
+        // source playlist, deduped, filtered (label OR url) and sorted A–Z.
+        val allLinks: List<SavedHit> get() =
+            (savedChannels.map { SavedHit(it, null) } +
+                savedPlaylists.flatMap { p -> p.channels.map { SavedHit(it, p.name) } })
+                .let { list -> if (f.isEmpty()) list else list.filter { it.link.label.lowercase().contains(f) || it.link.url.lowercase().contains(f) } }
+                .distinctBy { it.link.id }
+                .sortedBy { it.link.label.lowercase() }
         val shownPlaylists: List<SavedPlaylist> get() =
             (if (f.isEmpty()) savedPlaylists else savedPlaylists.filter { it.name.lowercase().contains(f) })
                 .sortedBy { it.name.lowercase() }
@@ -199,11 +208,12 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     // Default to the list view: DroidServe serves arbitrary files that usually have no artwork, so
     // a list reads better than a poster wall. Users can switch to the grid, which is then remembered.
     private var gridMode = prefs.getBoolean("grid", false)
+    private var showAll = prefs.getBoolean("showall", false)   // main-screen flat "All links" view
 
     // Launch at Home (saved playlists/channels). Discovery is reached via "Connect PC".
     // Launch at the device picker (Discovery), which also surfaces saved playlists/channels below
     // the servers so they're reachable without connecting to a phone.
-    private val _screen = MutableStateFlow<UiScreen>(UiScreen.Discovery(savedPlaylists = saved.playlists(), savedChannels = saved.channels()))
+    private val _screen = MutableStateFlow<UiScreen>(UiScreen.Discovery(savedPlaylists = saved.playlists(), savedChannels = saved.channels(), showAll = showAll))
     val screen: StateFlow<UiScreen> = _screen.asStateFlow()
 
     // One-shot events telling the Activity to fire an ACTION_VIEW intent (open in native player).
@@ -698,8 +708,14 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private fun discoveryScreen(error: String? = null, connecting: Boolean = false, scanning: Boolean = false) =
         UiScreen.Discovery(
             servers = discovered.values.toList(), error = error, connecting = connecting, scanning = scanning,
-            savedPlaylists = saved.playlists(), savedChannels = saved.channels(),
+            savedPlaylists = saved.playlists(), savedChannels = saved.channels(), showAll = showAll,
         )
+
+    fun toggleShowAll() {
+        showAll = !showAll
+        prefs.edit().putBoolean("showall", showAll).apply()
+        (_screen.value as? UiScreen.Discovery)?.let { _screen.value = it.copy(showAll = showAll) }
+    }
 
     fun setDiscoveryFilter(text: String) {
         (_screen.value as? UiScreen.Discovery)?.let { _screen.value = it.copy(filter = text) }
@@ -710,6 +726,11 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openSavedPlaylist(p: SavedPlaylist) { _screen.value = UiScreen.PlaylistDetail(p.name, p.channels) }
+
+    /** Re-open a saved playlist after a background process-kill (see MainActivity.onSaveInstanceState). */
+    fun restorePlaylist(name: String) {
+        saved.playlists().firstOrNull { it.name == name }?.let { _screen.value = UiScreen.PlaylistDetail(it.name, it.channels) }
+    }
 
     fun isGroupSaved(group: String): Boolean = saved.isPlaylistSaved(group)
     fun isChannelSaved(id: String): Boolean = saved.isChannelSaved(id)

@@ -7,8 +7,11 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -19,7 +22,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.deekshith.droidserve.tv.StreamLink
@@ -38,7 +43,9 @@ import com.deekshith.droidserve.tv.ui.FocusRow
 import com.deekshith.droidserve.tv.ui.InitialFocus
 import com.deekshith.droidserve.tv.ui.NavChip
 import com.deekshith.droidserve.tv.ui.StateMessage
+import com.deekshith.droidserve.tv.ui.Thumb
 import com.deekshith.droidserve.tv.ui.TopBar
+import com.deekshith.droidserve.tv.ui.VScrollbar
 import com.deekshith.droidserve.tv.ui.iconForLink
 import com.deekshith.droidserve.tv.ui.onMenuKey
 
@@ -103,7 +110,11 @@ fun LinksScreen(
                     "On your phone, open DroidServe, tap Links, and paste a video or stream URL — it appears here instantly.",
                 )
                 itemCount == 0 -> StateMessage(DsIcons.Search, "No matches", "Try a different search term.")
-                else -> LazyColumn(
+                else -> {
+                    val listState = rememberLazyListState()
+                    Box(Modifier.fillMaxSize()) {
+                    LazyColumn(
+                    state = listState,
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp),
                     modifier = Modifier.fillMaxSize(),
@@ -132,6 +143,9 @@ fun LinksScreen(
                             .onFocusChanged { if (it.hasFocus) { focusedLink = l; focusedGroup = null } }
                             .then(if (firstSingle) Modifier.focusRequester(firstFocus) else Modifier)
                         LinkRow(l, mod, saved = isChannelSaved(l.id)) { onOpen(l) }
+                    }
+                }
+                    VScrollbar(listState.layoutInfo.totalItemsCount, listState.layoutInfo.visibleItemsInfo.size, listState.firstVisibleItemIndex)
                     }
                 }
             }
@@ -192,7 +206,11 @@ fun LinkGroupScreen(
             when {
                 state.links.isEmpty() -> StateMessage(DsIcons.Link, "This playlist is empty", "Its links may have expired.")
                 shown.isEmpty() -> StateMessage(DsIcons.Search, "No matches", "Try a different search term.")
-                else -> LazyColumn(
+                else -> {
+                    val listState = rememberLazyListState()
+                    Box(Modifier.fillMaxSize()) {
+                    LazyColumn(
+                    state = listState,
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp),
                     modifier = Modifier.fillMaxSize(),
@@ -203,6 +221,9 @@ fun LinkGroupScreen(
                             .onFocusChanged { if (it.hasFocus) focusedLink = l }
                             .then(if (i == 0) Modifier.focusRequester(firstFocus) else Modifier)
                         LinkRow(l, mod, saved = isChannelSaved(l.id)) { onOpen(l) }
+                    }
+                }
+                    VScrollbar(listState.layoutInfo.totalItemsCount, listState.layoutInfo.visibleItemsInfo.size, listState.firstVisibleItemIndex)
                     }
                 }
             }
@@ -225,7 +246,12 @@ fun LinkGroupScreen(
 @Composable
 internal fun LinkRow(l: StreamLink, modifier: Modifier, saved: Boolean = false, onClick: () -> Unit) {
     FocusRow(onClick = onClick, modifier = modifier) { focused ->
-        DsIcon(iconForLink(l.url), tint = if (focused) DsColor.Amber else DsColor.Muted, size = 26.dp)
+        if (l.logo != null) {
+            Thumb(l.logo, iconForLink(l.url), Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)),
+                fallbackTint = if (focused) DsColor.Amber else DsColor.Muted, iconSize = 22.dp, contentScale = ContentScale.Fit)
+        } else {
+            DsIcon(iconForLink(l.url), tint = if (focused) DsColor.Amber else DsColor.Muted, size = 26.dp)
+        }
         Spacer(Modifier.width(16.dp))
         Column(Modifier.weight(1f)) {
             Text(l.label, style = DsType.Item, maxLines = 1, overflow = TextOverflow.Ellipsis)

@@ -86,7 +86,7 @@ object StreamResolver {
             LinkClassifier.Kind.COLLECTION -> {
                 val entries = PlaylistImport.parse(body, maxEntries)
                     .filter { isSupportedLink(it.url) }
-                    .map { it.copy(url = absolutize(it.url, url)) }
+                    .map { it.copy(url = absolutize(it.url, url), logo = it.logo?.let { lg -> absolutize(lg, url) }) }
                 if (entries.size >= 2) Outcome.Collection(entries) else Outcome.Single(url, null, true)
             }
             else -> Outcome.Single(url, null, true)   // HLS stream or single entry → play the URL as-is
