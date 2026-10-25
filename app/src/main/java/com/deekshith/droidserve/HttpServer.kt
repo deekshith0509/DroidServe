@@ -91,7 +91,10 @@ data class ServerOptions(
     val showHidden: Boolean = false,   // list/serve dotfiles & __system entries
     val allowZip: Boolean = true,      // expose ?zip=1 folder downloads
     val allowDownload: Boolean = true, // expose forced (?dl=1) file downloads
-    val title: String = "DroidServe"   // shown in the web UI header / tab
+    val title: String = "DroidServe", // shown in the web UI header / tab
+    // Playlist import limits — cap body/URL fetch size and max entries per batch.
+    val importMaxBytes: Int = 2 * 1024 * 1024,  // 2 MB
+    val importMaxEntries: Int = 500             // ≤ LinkStore.CAP
 )
 
 // ============================================================================
@@ -250,6 +253,38 @@ class HttpServer(
                 cors(it); it.addHeader("Access-Control-Max-Age", "86400")
             }
 
+        // POST /api/links/import — bulk M3U import (raw body text or ?url= server-side fetch).
+        // Handled here, before the GET/HEAD guard, because NanoHTTPD's dispatcher otherwise 405s it.
+        if (method == Method.POST && session.uri.trimStart('/') == "api/links/import") {
+            if (!checkAuth(session)) return unauthorized()
+            val nc = authNeeded() && !hasValidCookie(session)
+            fun ck(r: Response) = r.also {
+                if (nc) it.addHeader("Set-Cookie", "$COOKIE_NAME=$sessionToken; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly")
+            }
+            ServerStateHolder.incrementRequests()
+            val urlParam = session.parameters["url"]?.firstOrNull()?.trim()
+            val body = if (!urlParam.isNullOrEmpty()) {
+                if (!isAllowedLink(urlParam)) return errJson(Response.Status.BAD_REQUEST, "Invalid URL")
+                try {
+                    (java.net.URL(urlParam).openConnection() as java.net.HttpURLConnection).run {
+                        connectTimeout = 8_000; readTimeout = 12_000
+                        setRequestProperty("User-Agent", "Mozilla/5.0 DroidServe")
+                        inputStream.use { readCapped(it, options.importMaxBytes) }
+                    }
+                } catch (_: Exception) { return errJson(Response.Status.INTERNAL_ERROR, "Could not fetch playlist") }
+            } else {
+                val declared = session.headers["content-length"]?.toLongOrNull() ?: 0L
+                if (declared > options.importMaxBytes) return errJson(Response.Status.PAYLOAD_TOO_LARGE, "Playlist too large")
+                // Read exactly Content-Length bytes — not importMaxBytes — to avoid blocking on a
+                // keep-alive socket that never sends EOF between requests.
+                readCapped(session.inputStream, declared.toInt().coerceAtLeast(0))
+            }
+            val parsed = PlaylistImport.parse(body, options.importMaxEntries * 2)
+            val kept   = parsed.filter { isAllowedLink(it.url) }.take(options.importMaxEntries)
+            val (v, list) = LinkStore.addBatch(kept.map { it.url to it.title })
+            return ck(jsonResponse(ApiJson.importResult(v, list, kept.size, parsed.size - kept.size)))
+        }
+
         if (method != Method.GET && method != Method.HEAD)
             return errJson(Response.Status.METHOD_NOT_ALLOWED, "Method not allowed")
 
@@ -396,6 +431,26 @@ class HttpServer(
                     return if (v == since)
                         newFixedLengthResponse(Response.Status.NO_CONTENT, "application/json", "").also { cors(it) }
                     else cookie(jsonResponse(ApiJson.links(v, list)))
+                }
+                // Preview: fetch an M3U URL, parse, return count + sample titles — no store write.
+                "api/links/import/preview" -> {
+                    ServerStateHolder.incrementRequests()
+                    val urlParam = params["url"]?.firstOrNull()?.trim()
+                        ?: return errJson(Response.Status.BAD_REQUEST, "Missing url param")
+                    if (!isAllowedLink(urlParam)) return errJson(Response.Status.BAD_REQUEST, "Invalid URL")
+                    val text = try {
+                        (java.net.URL(urlParam).openConnection() as java.net.HttpURLConnection).run {
+                            connectTimeout = 8_000; readTimeout = 12_000
+                            setRequestProperty("User-Agent", "Mozilla/5.0 DroidServe")
+                            inputStream.use { readCapped(it, options.importMaxBytes) }
+                        }
+                    } catch (_: Exception) {
+                        return errJson(Response.Status.INTERNAL_ERROR, "Could not fetch playlist")
+                    }
+                    val entries = PlaylistImport.parse(text, options.importMaxEntries)
+                        .filter { isAllowedLink(it.url) }
+                    val sample = entries.take(3).map { it.title }
+                    return cookie(jsonResponse(ApiJson.importPreview(entries.size, sample)))
                 }
             }
         }

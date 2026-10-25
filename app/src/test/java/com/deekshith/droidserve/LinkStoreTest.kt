@@ -65,6 +65,47 @@ class LinkStoreTest {
         assertTrue("should wake on add, not block full timeout", System.currentTimeMillis() - start < 2500)
     }
 
+    @Test fun addBatch_addsAllItemsAndSingleVersionBump() {
+        LinkStore.clear()
+        val before = LinkStore.snapshot().first
+        val items = (1..5).map { "rtsp://host/ch$it.ts" to "Channel $it" }
+        val (v, list) = LinkStore.addBatch(items)
+        assertEquals(5, list.size)
+        assertEquals("version must increment by exactly 1", before + 1, v)
+        assertEquals("Channel 5", list[0].label)  // newest-first
+        assertEquals("Channel 1", list[4].label)
+    }
+
+    @Test fun addBatch_emptyItems_noVersionBump() {
+        LinkStore.clear()
+        val v0 = LinkStore.snapshot().first
+        val (v, list) = LinkStore.addBatch(emptyList())
+        assertEquals("empty batch must not bump version", v0, v)
+        assertTrue(list.isEmpty())
+    }
+
+    @Test fun addBatch_dedupsWithinBatch() {
+        LinkStore.clear()
+        val items = listOf("rtsp://host/ch.ts" to "A", "rtsp://host/ch.ts" to "B")
+        val (_, list) = LinkStore.addBatch(items)
+        assertEquals("duplicate URL within batch keeps only latest", 1, list.size)
+        assertEquals("B", list[0].label)
+    }
+
+    @Test fun addBatch_evictsOldestWhenOverCap() {
+        LinkStore.clear()
+        // Add 498 items first
+        val seed = (1..498).map { "rtsp://pre/ch$it.ts" to "Pre$it" }
+        LinkStore.addBatch(seed)
+        assertEquals(498, LinkStore.snapshot().second.size)
+        // Add 10 more — total 508 > CAP (500), should evict 8
+        val extra = (1..10).map { "rtsp://new/ch$it.ts" to "New$it" }
+        val (_, list) = LinkStore.addBatch(extra)
+        assertEquals("must not exceed CAP=500", 500, list.size)
+        // newest 10 survive
+        for (i in 10 downTo 1) assertTrue("New$i should be in list", list.any { it.label == "New$i" })
+    }
+
     @Test fun labelFor_variants() {
         assertEquals("a.mp4", LinkStore.labelFor("http://host/path/a.mp4?x=1"))
         assertEquals("host.tv", LinkStore.labelFor("https://host.tv"))

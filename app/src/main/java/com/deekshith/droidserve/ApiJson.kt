@@ -97,6 +97,31 @@ object ApiJson {
         append("]}")
     }
 
+    /** Response shape for api/links/import — extends the links list with import statistics. */
+    fun importResult(version: Int, links: List<LinkStore.Link>, added: Int, skipped: Int): String = buildString {
+        append("{\"version\":").append(version)
+        append(",\"added\":").append(added)
+        append(",\"skipped\":").append(skipped)
+        append(",\"links\":[")
+        for ((i, l) in links.withIndex()) {
+            if (i > 0) append(',')
+            append("{\"id\":\"").append(escape(l.id)).append("\",")
+            append("\"url\":\"").append(escape(l.url)).append("\",")
+            append("\"label\":\"").append(escape(l.label)).append("\",")
+            append("\"addedAt\":").append(l.addedAt).append(',')
+            append("\"playable\":").append(l.playable)
+            append('}')
+        }
+        append("]}")
+    }
+
+    /** Preview response for api/links/import/preview — count + first few titles, no store write. */
+    fun importPreview(count: Int, sample: List<String>): String = buildString {
+        append("{\"count\":").append(count).append(",\"sample\":[")
+        for ((i, t) in sample.withIndex()) { if (i > 0) append(','); append('"').append(escape(t)).append('"') }
+        append("]}")
+    }
+
     /** Serialize a cast command for the TV long-poll response. */
     fun castCommand(action: String, url: String, mime: String, subUrl: String? = null): String = buildString {
         append('{')
