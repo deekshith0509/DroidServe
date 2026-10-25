@@ -604,9 +604,24 @@ private fun SendToTvCard(isRunning: Boolean, snackbar: SnackbarHostState, scope:
         )
         if (links.isNotEmpty()) {
             Spacer(Modifier.height(10.dp))
-            Text("On the TV (${links.size})", style = MaterialTheme.typography.labelSmall,
+            // Collapse playlist channels (shared non-null group) into one row so a pasted M3U shows
+            // as a single "N channels" entry instead of flooding the card with every channel.
+            val groups = links.filter { it.group != null }.groupBy { it.group!! }
+            val singles = links.filter { it.group == null }
+            Text("On the TV (${groups.size + singles.size})", style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-            links.take(5).forEach { l ->
+            groups.forEach { (name, channels) ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.PlayCircle, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("📺 $name · ${channels.size} channels", maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                    IconButton(onClick = { channels.forEach { LinkStore.remove(it.id) }; refresh++ }, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Close, "Remove playlist", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.outline)
+                    }
+                }
+            }
+            singles.take(5).forEach { l ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.PlayCircle, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.outline)
                     Spacer(Modifier.width(8.dp))

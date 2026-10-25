@@ -82,6 +82,12 @@ data class StreamLink(
     val group: String? = null
 )
 
+/** A playlist the user saved to the TV Home: a name plus the channels captured at save time. */
+data class SavedPlaylist(
+    val name: String,
+    val channels: List<StreamLink>
+)
+
 /** A real-time command pushed from the phone (controller) to this TV (player). */
 data class CastCommand(
     val action: String,

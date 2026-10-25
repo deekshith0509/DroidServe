@@ -54,9 +54,10 @@ object DsDim {
     val RadiusCard = 16.dp
     val RadiusTile = 12.dp
     val RadiusChip = 10.dp
-    val PosterMin = 158.dp
-    val FocusScale = 1.08f
-    val RowScale = 1.025f
+    val PosterMin = 158.dp          // square album tiles
+    val TileMin = 212.dp            // landscape browse tiles (suit 16:9 video thumbnails)
+    val FocusScale = 1.05f   // gentle tile zoom; growth is absorbed by grid contentPadding
+    val RowScale = 1f        // full-width rows don't zoom — they use the amber bar + ring instead
 }
 
 /** Vertical scrim that fades a backdrop image down into [DsColor.Ink] so overlaid text stays legible. */

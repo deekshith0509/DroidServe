@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -77,6 +78,7 @@ fun MusicLibraryScreen(
                     columns = GridCells.Adaptive(DsDim.PosterMin),
                     horizontalArrangement = Arrangement.spacedBy(DsDim.Gutter),
                     verticalArrangement = Arrangement.spacedBy(DsDim.Gutter),
+                    contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 10.dp, bottom = 28.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     items(shown.size, key = { shown[it].path + it }) { i ->

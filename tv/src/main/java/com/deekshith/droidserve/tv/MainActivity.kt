@@ -29,9 +29,11 @@ import com.deekshith.droidserve.tv.ui.screens.AuthScreen
 import com.deekshith.droidserve.tv.ui.screens.BrowseScreen
 import com.deekshith.droidserve.tv.ui.screens.CrashScreen
 import com.deekshith.droidserve.tv.ui.screens.DiscoveryScreen
+import com.deekshith.droidserve.tv.ui.screens.HomeScreen
 import com.deekshith.droidserve.tv.ui.screens.LinkGroupScreen
 import com.deekshith.droidserve.tv.ui.screens.LinksScreen
 import com.deekshith.droidserve.tv.ui.screens.MusicLibraryScreen
+import com.deekshith.droidserve.tv.ui.screens.SavedPlaylistScreen
 import com.deekshith.droidserve.tv.ui.screens.ViewerScreen
 import kotlinx.coroutines.launch
 
@@ -72,6 +74,8 @@ class MainActivity : ComponentActivity() {
                     val screen by vm.screen.collectAsStateWithLifecycle()
                     Box(Modifier.fillMaxSize().background(DsColor.Ink)) {
                         when (val s = screen) {
+                            is UiScreen.Home -> HomeScreen(s, vm::connectPc, vm::setHomeFilter, vm::openSavedPlaylist, vm::onLinkClick, vm::removeSavedPlaylist, vm::removeSavedChannel)
+                            is UiScreen.PlaylistDetail -> SavedPlaylistScreen(s, vm::setPlaylistFilter, vm::onLinkClick, vm::removeSavedPlaylist)
                             is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual, vm::rescan)
                             is UiScreen.Auth -> AuthScreen(s, vm::submitAuth, vm::forgetSaved)
                             is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort, vm::clearCastToast, vm::toggleView, vm::openMusic, vm::openLinks) { vm.openFolder(s.server, s.path) }
@@ -80,8 +84,8 @@ class MainActivity : ComponentActivity() {
                             is UiScreen.ApkInstall -> ApkInstallScreen(s, vm::installReady)
                             is UiScreen.MusicLibrary -> MusicLibraryScreen(s, vm::openAlbum, vm::setMusicFilter)
                             is UiScreen.AlbumSongs -> AlbumSongsScreen(s, vm::playSong)
-                            is UiScreen.Links -> LinksScreen(s, vm::onLinkClick, vm::openLinkGroup)
-                            is UiScreen.LinkGroup -> LinkGroupScreen(s, vm::onLinkClick)
+                            is UiScreen.Links -> LinksScreen(s, vm::onLinkClick, vm::openLinkGroup, vm::saveLinkGroupToHome, vm::saveChannelToHome, vm::removeSavedPlaylist, vm::removeSavedChannel, vm::isGroupSaved, vm::isChannelSaved)
+                            is UiScreen.LinkGroup -> LinkGroupScreen(s, vm::onLinkClick, vm::saveLinkGroupToHome, vm::saveChannelToHome, vm::removeSavedPlaylist, vm::removeSavedChannel, vm::isGroupSaved, vm::isChannelSaved)
                         }
                     }
                 }

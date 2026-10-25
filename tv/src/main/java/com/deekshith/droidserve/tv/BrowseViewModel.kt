@@ -149,6 +149,31 @@ sealed interface UiScreen {
         val group: String,
         val links: List<StreamLink>
     ) : UiScreen
+
+    /**
+     * Top-level launch screen. Shows items the user saved (playlists + channels), which play
+     * directly over the internet with no phone connected. "Connect PC" opens [Discovery].
+     */
+    data class Home(
+        val playlists: List<SavedPlaylist> = emptyList(),
+        val channels: List<StreamLink> = emptyList(),
+        val filter: String = ""
+    ) : UiScreen {
+        private val f get() = filter.trim().lowercase()
+        val shownPlaylists: List<SavedPlaylist> get() = if (f.isEmpty()) playlists else playlists.filter { it.name.lowercase().contains(f) }
+        val shownChannels: List<StreamLink> get() = if (f.isEmpty()) channels else channels.filter { it.label.lowercase().contains(f) }
+    }
+
+    /** A saved playlist's channels, opened from [Home]. */
+    data class PlaylistDetail(
+        val name: String,
+        val links: List<StreamLink>,
+        val filter: String = ""
+    ) : UiScreen {
+        val shown: List<StreamLink> get() = filter.trim().lowercase().let { f ->
+            if (f.isEmpty()) links else links.filter { it.label.lowercase().contains(f) }
+        }
+    }
 }
 
 class BrowseViewModel(app: Application) : AndroidViewModel(app) {
@@ -157,10 +182,14 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private val scanner = SubnetScanner(app)
     private val creds = CredentialStore(app)
     private val playback = PlaybackStore(app)
+    private val saved = SavedStore(app)
     private val prefs = app.getSharedPreferences("ds_tv", android.content.Context.MODE_PRIVATE)
-    private var gridMode = prefs.getBoolean("grid", true)
+    // Default to the list view: DroidServe serves arbitrary files that usually have no artwork, so
+    // a list reads better than a poster wall. Users can switch to the grid, which is then remembered.
+    private var gridMode = prefs.getBoolean("grid", false)
 
-    private val _screen = MutableStateFlow<UiScreen>(UiScreen.Discovery())
+    // Launch at Home (saved playlists/channels). Discovery is reached via "Connect PC".
+    private val _screen = MutableStateFlow<UiScreen>(UiScreen.Home(saved.playlists(), saved.channels()))
     val screen: StateFlow<UiScreen> = _screen.asStateFlow()
 
     // One-shot events telling the Activity to fire an ACTION_VIEW intent (open in native player).
@@ -650,8 +679,50 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ── Home / saved items ────────────────────────────────────────────────────
+    private fun homeScreen() = UiScreen.Home(saved.playlists(), saved.channels())
+
+    fun openHome() { _screen.value = homeScreen() }
+
+    /** From Home: open the LAN file-browsing flow. */
+    fun connectPc() {
+        _screen.value = UiScreen.Discovery(servers = discovered.values.toList())
+        scanOnce()
+    }
+
+    fun setHomeFilter(text: String) {
+        (_screen.value as? UiScreen.Home)?.let { _screen.value = it.copy(filter = text) }
+    }
+
+    fun setPlaylistFilter(text: String) {
+        (_screen.value as? UiScreen.PlaylistDetail)?.let { _screen.value = it.copy(filter = text) }
+    }
+
+    fun openSavedPlaylist(p: SavedPlaylist) { _screen.value = UiScreen.PlaylistDetail(p.name, p.channels) }
+
+    fun isGroupSaved(group: String): Boolean = saved.isPlaylistSaved(group)
+    fun isChannelSaved(id: String): Boolean = saved.isChannelSaved(id)
+
+    fun saveLinkGroupToHome(group: String) {
+        saved.savePlaylist(group, streamLinks.filter { it.group == group })
+        refreshHome()
+    }
+
+    fun saveChannelToHome(link: StreamLink) { saved.saveChannel(link); refreshHome() }
+
+    fun removeSavedPlaylist(name: String) {
+        saved.removePlaylist(name)
+        if (_screen.value is UiScreen.PlaylistDetail) _screen.value = homeScreen() else refreshHome()
+    }
+
+    fun removeSavedChannel(id: String) { saved.removeChannel(id); refreshHome() }
+
+    private fun refreshHome() { if (_screen.value is UiScreen.Home) _screen.value = homeScreen() }
+
     fun onBack(): Boolean {
         when (val cur = _screen.value) {
+            is UiScreen.Home -> return false
+            is UiScreen.PlaylistDetail -> { _screen.value = homeScreen(); return true }
             is UiScreen.Auth -> { _screen.value = backToDiscovery(); return true }
             is UiScreen.Viewer -> {
                 // Return to the folder listing we came from, from cache (no refetch).
@@ -695,7 +766,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 openFolder(cur.server, cur.path.substringBeforeLast('/', ""))
                 return true
             }
-            is UiScreen.Discovery -> return false
+            is UiScreen.Discovery -> { _screen.value = homeScreen(); return true }
         }
     }
 
