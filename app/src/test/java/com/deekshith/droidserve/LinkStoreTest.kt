@@ -96,16 +96,16 @@ class LinkStoreTest {
 
     @Test fun addBatch_evictsOldestWhenOverCap() {
         LinkStore.clear()
-        // Add 498 items first
-        val seed = (1..498).map { "rtsp://pre/ch$it.ts" to "Pre$it" }
+        // Seed just under CAP (12000)
+        val seed = (1..11990).map { "rtsp://pre/ch$it.ts" to "Pre$it" }
         LinkStore.addBatch(seed)
-        assertEquals(498, LinkStore.snapshot().second.size)
-        // Add 10 more — total 508 > CAP (500), should evict 8
-        val extra = (1..10).map { "rtsp://new/ch$it.ts" to "New$it" }
+        assertEquals(11990, LinkStore.snapshot().second.size)
+        // Add 20 more — total 12010 > CAP (12000), should evict 10
+        val extra = (1..20).map { "rtsp://new/ch$it.ts" to "New$it" }
         val (_, list) = LinkStore.addBatch(extra)
-        assertEquals("must not exceed CAP=500", 500, list.size)
-        // newest 10 survive
-        for (i in 10 downTo 1) assertTrue("New$i should be in list", list.any { it.label == "New$i" })
+        assertEquals("must not exceed CAP=12000", 12000, list.size)
+        // newest 20 survive
+        for (i in 20 downTo 1) assertTrue("New$i should be in list", list.any { it.label == "New$i" })
     }
 
     @Test fun labelFor_variants() {
