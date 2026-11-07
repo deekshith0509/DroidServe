@@ -141,6 +141,25 @@ class DroidServeClient(
         } finally { conn.disconnect() }
     }
 
+    /** Report the TV's currently-playing channel to the phone (phone-as-remote "now playing"). */
+    fun reportNowPlaying(label: String, idx: Int, total: Int) {
+        val conn = open("$baseUrl/api/remote/set?label=${encodeSeg(label)}&idx=$idx&total=$total")
+        try { conn.responseCode } finally { conn.disconnect() }
+    }
+
+    /** Long-poll for the next remote command (up/down/number) from the phone. Null on 204/timeout. */
+    fun pollRemote(since: Int): Pair<Int, String>? {
+        val conn = open("$baseUrl/api/remote/poll?since=$since").apply { readTimeout = 30_000 }
+        try {
+            val code = conn.responseCode
+            if (code == 401) throw AuthException()
+            if (code == 204) return null
+            if (code !in 200..299) throw RuntimeException("HTTP $code")
+            val o = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+            return o.optInt("version") to o.optString("cmd")
+        } finally { conn.disconnect() }
+    }
+
     private fun parseLinks(o: JSONObject): List<StreamLink> {
         val arr = o.optJSONArray("links") ?: return emptyList()
         val out = ArrayList<StreamLink>(arr.length())

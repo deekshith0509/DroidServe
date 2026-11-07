@@ -707,6 +707,7 @@ body.tv,body.tv *{cursor:none!important}
 </div>
 <div class="mu-ov" id="lkov">
 <div class="mu-hd lk-hd"><span class="mu-ttl">🔗 Links</span><input type="url" id="lkin" placeholder="Paste a video, stream, or .m3u playlist URL…" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Streaming URL to send to the TV"><button class="sb" id="lkadd">Send to TV</button><a class="sb" id="lkexp" href="/api/links/export.m3u" download title="Export all channels as .m3u">⬇&nbsp;.m3u</a><button class="pl-x" id="lkx" title="Close (Esc)">✕</button></div>
+<div id="lknow" style="display:none"></div>
 <div class="mu-body" id="lkbody" style="flex:1"></div>
 <div class="lk-import" id="lkimport">
 <div class="lk-import-ttl">📋 Import playlist</div>
@@ -1101,6 +1102,22 @@ function doRefresh(u){if(!u)return;setInfo('<span style="color:var(--mu)">Refres
   fetch('/api/links/refresh?url='+encodeURIComponent(u),{credentials:'same-origin'})
     .then(function(r){return r.ok?r.json():Promise.reject('Could not refresh');})
     .then(importDone).catch(importFail);}
+// Phone-as-remote: show what's playing on the TV's in-app channel player and drive channel up/down.
+var nowEl=document.getElementById('lknow');
+function remoteCmd(c){fetch('/api/remote/cmd?c='+encodeURIComponent(c),{credentials:'same-origin'}).catch(function(){});}
+if(nowEl){
+  nowEl.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-rc]');if(b)remoteCmd(b.dataset.rc);});
+  function refreshNow(){
+    fetch('/api/remote/now',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}).then(function(d){
+      if(d&&d.total>0){
+        nowEl.style.display='flex';nowEl.style.gap='8px';nowEl.style.alignItems='center';nowEl.style.padding='8px 0';
+        nowEl.innerHTML='<span style="flex:1">📺 On TV: '+esc(d.label)+' ('+(d.idx+1)+'/'+d.total+')</span>'+
+          '<button class="sb" data-rc="up">⟲ Prev</button><button class="sb" data-rc="down">Next ⟳</button>';
+      } else { nowEl.style.display='none'; nowEl.innerHTML=''; }
+    }).catch(function(){});
+  }
+  setInterval(refreshNow,4000); refreshNow();
+}
 function importFail(msg){setInfo('<div style="color:#f87171">'+esc(msg||'Import failed')+'</div>');}
 function doImportUrl(u){
   setInfo('<span style="color:var(--mu)">Importing…</span>');
