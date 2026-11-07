@@ -22,6 +22,8 @@ enum class ViewerKind { TEXT, IMAGE }
 
 enum class ApkPhase { DOWNLOADING, READY, FAILED }
 
+enum class CatalogTab { LANGUAGES, COUNTRIES, CATEGORIES }
+
 /** A media stream to hand to the OS default player (VLC/MX/etc) via ACTION_VIEW. */
 data class OpenRequest(
     val url: String,
@@ -209,8 +211,26 @@ sealed interface UiScreen {
         val epg: EpgNowNext? = null,
         /** The channel we were on before this one, for the remote's "last channel" flip-back. */
         val prevIndex: Int? = null,
+        /** Non-null when these channels came from a named source (catalog bundle), enabling "Save to Home". */
+        val title: String? = null,
     ) : UiScreen {
         val current: StreamLink get() = channels[index]
+    }
+
+    /** The in-app iptv-org "Discover" catalog: browse Language/Country/Category bundles and load one. */
+    data class Catalog(
+        val tab: CatalogTab = CatalogTab.LANGUAGES,
+        val data: IptvCatalog.Data? = null,
+        val loading: Boolean = true,
+        val error: String? = null,
+        /** Label of a bundle currently being fetched, for a loading overlay. */
+        val loadingBundle: String? = null,
+    ) : UiScreen {
+        val entries: List<IptvCatalog.Entry> get() = when (tab) {
+            CatalogTab.LANGUAGES -> data?.languages ?: emptyList()
+            CatalogTab.COUNTRIES -> data?.countries ?: emptyList()
+            CatalogTab.CATEGORIES -> data?.categories ?: emptyList()
+        }
     }
 }
 
@@ -263,6 +283,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private var playerReturn: UiScreen? = null
     private var epgJob: Job? = null
     private var zapJob: Job? = null
+    private var catalogData: IptvCatalog.Data? = null   // cached iptv-org index, loaded once
 
     init {
         GridDensity.intValue = prefs.getInt("density", 1)   // restore app-wide grid density
@@ -544,12 +565,53 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ── Native channel player ──────────────────────────────────────────────
-    fun openChannelPlayer(channels: List<StreamLink>, index: Int) {
+    fun openChannelPlayer(channels: List<StreamLink>, index: Int, title: String? = null) {
         if (channels.isEmpty()) return
         val i = index.coerceIn(0, channels.lastIndex)
         playerReturn = _screen.value
-        _screen.value = UiScreen.ChannelPlayer(channels, i)
+        _screen.value = UiScreen.ChannelPlayer(channels, i, title = title)
         loadEpg(channels[i])
+    }
+
+    /** Save the current player's channels to the TV Home (a named catalog bundle). */
+    fun saveCurrentPlayerToHome() {
+        val s = _screen.value as? UiScreen.ChannelPlayer ?: return
+        val name = s.title ?: return
+        saved.savePlaylist(name, s.channels)
+        refreshDiscovery()
+    }
+
+    // ── iptv-org Discover catalog ──────────────────────────────────────────
+    fun openCatalog() {
+        _screen.value = UiScreen.Catalog(loading = catalogData == null, data = catalogData)
+        if (catalogData == null) viewModelScope.launch {
+            try {
+                val d = IptvCatalog.load()
+                catalogData = d
+                (_screen.value as? UiScreen.Catalog)?.let { _screen.value = it.copy(data = d, loading = false) }
+            } catch (e: Exception) {
+                (_screen.value as? UiScreen.Catalog)?.let { _screen.value = it.copy(loading = false, error = e.message ?: "Couldn't load catalog") }
+            }
+        }
+    }
+
+    fun selectCatalogTab(tab: CatalogTab) {
+        (_screen.value as? UiScreen.Catalog)?.let { if (it.tab != tab) _screen.value = it.copy(tab = tab, error = null) }
+    }
+
+    fun loadBundle(entry: IptvCatalog.Entry) {
+        val cat = _screen.value as? UiScreen.Catalog ?: return
+        _screen.value = cat.copy(loadingBundle = entry.label)
+        viewModelScope.launch {
+            val channels = runCatching { IptvCatalog.fetchBundle(entry.url) }.getOrDefault(emptyList())
+            val cur = _screen.value as? UiScreen.Catalog ?: return@launch
+            if (channels.isEmpty()) {
+                _screen.value = cur.copy(loadingBundle = null, error = "No channels found in “${entry.label}”")
+            } else {
+                _screen.value = cur.copy(loadingBundle = null)   // clean catalog is the player's return target
+                openChannelPlayer(channels, 0, title = entry.label)
+            }
+        }
     }
 
     fun channelNext() = shiftChannel(1)
@@ -899,6 +961,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 playerReturn = null
                 return true
             }
+            is UiScreen.Catalog -> { _screen.value = discoveryScreen(); return true }
             is UiScreen.ApkInstall -> {
                 _screen.value = render(cur.server, currentPath, "", SortMode.DEFAULT)
                 return true

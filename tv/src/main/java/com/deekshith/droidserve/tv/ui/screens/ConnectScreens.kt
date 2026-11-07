@@ -103,6 +103,7 @@ fun DiscoveryScreen(
     onSaveChannel: (StreamLink) -> Unit,
     isChannelSaved: (String) -> Boolean,
     onToggleShowAll: () -> Unit,
+    onOpenCatalog: () -> Unit,
 ) {
     val firstFocus = remember { FocusRequester() }
     val searchFocus = remember { FocusRequester() }
@@ -136,7 +137,9 @@ fun DiscoveryScreen(
                 Column {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text("DroidServe", style = DsType.Hero, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        NavChip("Discover", DsIcons.Video, active = false) { onOpenCatalog() }
                         if (hasSaved) {
+                            Spacer(Modifier.width(8.dp))
                             NavChip("Search", DsIcons.Search, active = searchOpen) { searchOpen = !searchOpen }
                             Spacer(Modifier.width(8.dp))
                             NavChip(if (state.showAll) "Grouped" else "All", DsIcons.Grid, active = state.showAll) { onToggleShowAll() }
