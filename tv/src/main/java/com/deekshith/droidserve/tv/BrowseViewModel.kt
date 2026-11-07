@@ -195,6 +195,21 @@ sealed interface UiScreen {
                 .sortedBy { it.label.lowercase() }
         }
     }
+
+    /**
+     * Full-screen native player (Media3/ExoPlayer) with D-pad channel flipping over [channels],
+     * a toggleable overlay channel list, number-zapping, and an optional now/next EPG bar. This is
+     * what lets the user flip IPTV channels in-app instead of bouncing out to VLC per channel.
+     */
+    data class ChannelPlayer(
+        val channels: List<StreamLink>,
+        val index: Int,
+        val overlayOpen: Boolean = false,
+        val numberInput: String = "",
+        val epg: EpgNowNext? = null,
+    ) : UiScreen {
+        val current: StreamLink get() = channels[index]
+    }
 }
 
 class BrowseViewModel(app: Application) : AndroidViewModel(app) {
@@ -241,6 +256,11 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     // Merged results keyed by "host:port" so mDNS + subnet-probe fallback never duplicate.
     private val discovered = LinkedHashMap<String, DiscoveredServer>()
     private var scanJob: Job? = null
+
+    // Native channel player: the screen to return to on Back, plus the EPG/number-zap jobs.
+    private var playerReturn: UiScreen? = null
+    private var epgJob: Job? = null
+    private var zapJob: Job? = null
 
     init {
         GridDensity.intValue = prefs.getInt("density", 1)   // restore app-wide grid density
@@ -503,8 +523,84 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
      * chooser offers a browser (which runs the page's own JS player) instead of bouncing a player.
      */
     fun onLinkClick(link: StreamLink) {
-        val mime = if (link.playable) mimeForUrl(link.url) else ""
-        _open.tryEmit(OpenRequest(link.url, mime, forceChooser = true))
+        // Web pages / magnets aren't streams — keep the external-chooser path (opens a browser / app).
+        if (!link.playable) { _open.tryEmit(OpenRequest(link.url, "", forceChooser = true)); return }
+        // A playable channel opens in the in-app player, flipping through the list it was clicked from.
+        val ctx = channelContext()
+        val queue = if (ctx.any { it.id == link.id }) ctx else listOf(link)
+        openChannelPlayer(queue, queue.indexOfFirst { it.id == link.id }.coerceAtLeast(0))
+    }
+
+    // The ordered, playable channels of whichever list the click came from, so the player flips
+    // through exactly what the user was looking at.
+    private fun channelContext(): List<StreamLink> = when (val s = _screen.value) {
+        is UiScreen.LinkGroup -> s.links.filter { it.playable }
+        is UiScreen.PlaylistDetail -> s.shown.filter { it.playable }
+        is UiScreen.Links -> s.links.filter { it.group == null && it.playable }
+        is UiScreen.Discovery -> s.savedChannels.filter { it.playable }
+        else -> emptyList()
+    }
+
+    // ── Native channel player ──────────────────────────────────────────────
+    fun openChannelPlayer(channels: List<StreamLink>, index: Int) {
+        if (channels.isEmpty()) return
+        val i = index.coerceIn(0, channels.lastIndex)
+        playerReturn = _screen.value
+        _screen.value = UiScreen.ChannelPlayer(channels, i)
+        loadEpg(channels[i])
+    }
+
+    fun channelNext() = shiftChannel(1)
+    fun channelPrev() = shiftChannel(-1)
+    private fun shiftChannel(delta: Int) {
+        val s = _screen.value as? UiScreen.ChannelPlayer ?: return
+        val n = s.channels.size; if (n == 0) return
+        val idx = ((s.index + delta) % n + n) % n   // wrap both directions
+        _screen.value = s.copy(index = idx, numberInput = "", epg = null)
+        loadEpg(s.channels[idx])
+    }
+
+    fun jumpToChannel(index: Int) {
+        val s = _screen.value as? UiScreen.ChannelPlayer ?: return
+        if (index !in s.channels.indices) return
+        _screen.value = s.copy(index = index, overlayOpen = false, numberInput = "", epg = null)
+        loadEpg(s.channels[index])
+    }
+
+    fun setChannelOverlay(open: Boolean) {
+        (_screen.value as? UiScreen.ChannelPlayer)?.let { if (it.overlayOpen != open) _screen.value = it.copy(overlayOpen = open) }
+    }
+
+    /** Remote digit → build a channel number, commit after a short pause (zapping). */
+    fun pushZapDigit(d: Int) {
+        val s = _screen.value as? UiScreen.ChannelPlayer ?: return
+        _screen.value = s.copy(numberInput = (s.numberInput + d).takeLast(4))
+        zapJob?.cancel()
+        zapJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(1300)
+            val cur = _screen.value as? UiScreen.ChannelPlayer ?: return@launch
+            val n = cur.numberInput.toIntOrNull()
+            _screen.value = cur.copy(numberInput = "")
+            if (n != null && n in 1..cur.channels.size) jumpToChannel(n - 1)
+        }
+    }
+
+    /** Fallback: hand the current channel to an external player (VLC/MX) for a codec ExoPlayer can't do. */
+    fun openCurrentExternally() {
+        val s = _screen.value as? UiScreen.ChannelPlayer ?: return
+        _open.tryEmit(OpenRequest(s.current.url, mimeForUrl(s.current.url), forceChooser = true))
+    }
+
+    private fun loadEpg(ch: StreamLink) {
+        epgJob?.cancel()
+        val guide = ch.tvgUrl; val id = ch.tvgId
+        if (guide.isNullOrBlank() || id.isNullOrBlank()) return
+        val wanted = (_screen.value as? UiScreen.ChannelPlayer)?.channels?.mapNotNull { it.tvgId }?.toSet() ?: emptySet()
+        epgJob = viewModelScope.launch {
+            val nn = runCatching { Epg.nowNextFor(guide, id, wanted) }.getOrNull()
+            val s = _screen.value as? UiScreen.ChannelPlayer ?: return@launch
+            if (s.current.id == ch.id) _screen.value = s.copy(epg = nn)
+        }
     }
 
     // Known media extensions get a typed intent (so players register as handlers); everything else
@@ -787,6 +883,14 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 _screen.value = UiScreen.Links(cur.server, streamLinks, loading = false)
                 return true
             }
+            is UiScreen.ChannelPlayer -> {
+                // Back closes the overlay first, then leaves the player for the screen we came from.
+                if (cur.overlayOpen) { _screen.value = cur.copy(overlayOpen = false); return true }
+                epgJob?.cancel(); zapJob?.cancel()
+                _screen.value = playerReturn ?: discoveryScreen()
+                playerReturn = null
+                return true
+            }
             is UiScreen.ApkInstall -> {
                 _screen.value = render(cur.server, currentPath, "", SortMode.DEFAULT)
                 return true
@@ -812,6 +916,8 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         pollJob?.cancel()
         linksJob?.cancel()
+        epgJob?.cancel()
+        zapJob?.cancel()
         super.onCleared()
     }
 }

@@ -146,7 +146,9 @@ class DroidServeClient(
         val out = ArrayList<StreamLink>(arr.length())
         for (i in 0 until arr.length()) {
             val l = arr.getJSONObject(i)
-            out.add(StreamLink(l.optString("id"), l.optString("url"), l.optString("label"), l.optLong("addedAt"), l.optBoolean("playable", true), l.optString("group", "").takeIf { it.isNotEmpty() }, l.optString("logo", "").takeIf { it.isNotEmpty() }))
+            fun s(k: String) = l.optString(k, "").takeIf { it.isNotEmpty() }
+            out.add(StreamLink(l.optString("id"), l.optString("url"), l.optString("label"), l.optLong("addedAt"), l.optBoolean("playable", true),
+                s("group"), s("logo"), s("tvgId"), s("userAgent"), s("referrer"), s("tvgUrl")))
         }
         return out
     }

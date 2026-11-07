@@ -15,7 +15,18 @@ import java.io.File
  */
 object LinkStore {
 
-    data class Link(val id: String, val url: String, val label: String, val addedAt: Long, val playable: Boolean = true, val group: String? = null, val logo: String? = null)
+    data class Link(val id: String, val url: String, val label: String, val addedAt: Long, val playable: Boolean = true, val group: String? = null, val logo: String? = null, val tvgId: String? = null, val userAgent: String? = null, val referrer: String? = null, val tvgUrl: String? = null)
+
+    /** One item for [addBatch]: a playlist channel with the metadata the TV player needs. */
+    data class NewLink(
+        val url: String,
+        val label: String? = null,
+        val logo: String? = null,
+        val tvgId: String? = null,
+        val userAgent: String? = null,
+        val referrer: String? = null,
+        val tvgUrl: String? = null,
+    )
 
     private const val CAP = Int.MAX_VALUE   // no entry cap — a playlist imports in full
     private val lock = java.lang.Object()
@@ -54,14 +65,15 @@ object LinkStore {
      * Looping [add] N times would cause N full-file rewrites and bump the version N times.
      * Each item is (url, label, logo); [group] is the shared playlist name.
      */
-    fun addBatch(items: List<Triple<String, String?, String?>>, group: String? = null): Pair<Int, List<Link>> = synchronized(lock) {
+    fun addBatch(items: List<NewLink>, group: String? = null): Pair<Int, List<Link>> = synchronized(lock) {
         val grp = group?.let { sanitize(it) }?.ifEmpty { null }
-        for ((url, label, logo) in items) {
-            val clean = sanitize(url); if (clean.isEmpty()) continue
+        fun opt(s: String?) = s?.let { sanitize(it) }?.ifEmpty { null }
+        for (item in items) {
+            val clean = sanitize(item.url); if (clean.isEmpty()) continue
             links.removeAll { it.url == clean }
-            val lbl = sanitize(label.orEmpty()).ifEmpty { sanitize(labelFor(clean)) }.ifEmpty { clean.take(60) }
-            val lg = logo?.let { sanitize(it) }?.ifEmpty { null }
-            links.add(0, Link(nextId(), clean, lbl, System.currentTimeMillis(), true, grp, lg))
+            val lbl = sanitize(item.label.orEmpty()).ifEmpty { sanitize(labelFor(clean)) }.ifEmpty { clean.take(60) }
+            links.add(0, Link(nextId(), clean, lbl, System.currentTimeMillis(), true, grp,
+                opt(item.logo), opt(item.tvgId), opt(item.userAgent), opt(item.referrer), opt(item.tvgUrl)))
         }
         while (links.size > CAP) links.removeAt(links.size - 1)
         if (items.isNotEmpty()) bump()
@@ -99,11 +111,14 @@ object LinkStore {
     // and surrounding whitespace so a pasted value is safe to store and serialize.
     private fun sanitize(s: String): String = s.trim().filter { it >= ' ' }
 
-    // ── Persistence: one link per line as "addedAt\tid\turl\tlabel" ─────────────────────────────
+    // ── Persistence: one link per tab-separated line. Columns are append-only (old rows load fine):
+    // addedAt, id, url, label, playable, group, logo, tvgId, userAgent, referrer, tvgUrl ──────────
     private fun persist() {
         val f = file ?: return
         runCatching {
-            f.writeText(links.joinToString("\n") { "${it.addedAt}\t${it.id}\t${it.url}\t${it.label}\t${if (it.playable) 1 else 0}\t${it.group ?: ""}\t${it.logo ?: ""}" })
+            f.writeText(links.joinToString("\n") {
+                "${it.addedAt}\t${it.id}\t${it.url}\t${it.label}\t${if (it.playable) 1 else 0}\t${it.group ?: ""}\t${it.logo ?: ""}\t${it.tvgId ?: ""}\t${it.userAgent ?: ""}\t${it.referrer ?: ""}\t${it.tvgUrl ?: ""}"
+            })
         }
     }
 
@@ -112,11 +127,11 @@ object LinkStore {
         runCatching {
             if (!f.exists()) return@runCatching
             for (line in f.readLines()) {
-                val p = line.split('\t', limit = 7)
+                val p = line.split('\t', limit = 11)
                 if (p.size >= 4) {
-                    val group = if (p.size >= 6) p[5].ifEmpty { null } else null
-                    val logo = if (p.size >= 7) p[6].ifEmpty { null } else null
-                    links.add(Link(p[1], p[2], p[3], p[0].toLongOrNull() ?: 0L, if (p.size >= 5) p[4] == "1" else true, group, logo))
+                    fun col(i: Int) = p.getOrNull(i)?.ifEmpty { null }
+                    links.add(Link(p[1], p[2], p[3], p[0].toLongOrNull() ?: 0L, if (p.size >= 5) p[4] == "1" else true,
+                        col(5), col(6), col(7), col(8), col(9), col(10)))
                     p[1].substringAfterLast('_').toLongOrNull()?.let { if (it >= counter) counter = it + 1 }
                 }
             }

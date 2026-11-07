@@ -68,11 +68,12 @@ it automatically.
 | **Install APKs** | Tap an `.apk` served by the phone → it downloads locally and opens the **system installer** (grant DroidServe "install unknown apps" once). No ADB, no root — the standard sideload flow, in-app |
 | **In-app viewers** | Text (incl. `.srt`/`.log`/config), images, and audio open **inside the app** — no dependence on an external viewer that may be missing or broken on old TVs |
 | **In-app audio player** | Songs play in-app via the native `MediaPlayer` with the folder as a playlist (Prev/Next, auto-advance, live position) |
-| **Native video playback** | Video fires an `ACTION_VIEW` intent so it opens in the device's own player (VLC, MX, Kodi) for hardware decoding and broad codecs — no bundled player |
+| **Native video playback** | Browsed video files open in the device's own player (VLC, MX, Kodi) via `ACTION_VIEW` for hardware decoding and broad codecs |
 | **Resume video** | The TV remembers where each video stopped and asks the player to resume there; the resume cache self-prunes if it grows past 100 KB |
 | **Subtitles** | Sidecar `.srt`/`.vtt` next to a video are handed to the external player (VLC/MX subtitle extras) |
 | **Play on TV (cast)** | Tap 📺 on any video/audio row in the phone web UI; the phone pushes the stream (and any subtitle) to the TV app, which opens it in the native player. The phone becomes the remote |
-| **Streaming links (🔗)** | A **Links** screen shows URLs pushed from the phone in real time (long-poll); pick one with the remote to open — direct streams go to your video player, unresolved web pages open in a browser so nothing dead-ends |
+| **Streaming links (🔗)** | A **Links** screen shows URLs pushed from the phone in real time (long-poll); pick one with the remote to open — direct streams open in the in-app channel player, unresolved web pages open in a browser so nothing dead-ends |
+| **Live IPTV channel player** | A playable channel opens **in-app** (Media3/ExoPlayer; HLS + DASH): **D-pad ↑/↓ flips channels** instantly over a single long-lived player (no app-switch, flat RAM), **OK** opens a logo'd channel-list overlay, **digits** zap to a channel number, and per-channel `#EXTVLCOPT` **User-Agent/Referer** are set on the stream so header-gated IPTV plays instead of 403-ing. An optional **now/next EPG** bar appears when the playlist carries a `url-tvg` guide. **MENU (☰)** hands the channel to an external player for codecs ExoPlayer can't do |
 | **Save to the home screen** | Press the remote's **MENU (☰)** button on any link or playlist in **Links** to save it to the TV's home screen — a playlist saves as a folder, a single link as a tile. Saved items play directly over the internet with **no phone connected**, and appear below the device list on the main screen |
 | **Search (incl. inside playlists)** | The main screen and playlist views search link and playlist names — and search **recursively inside saved playlists**, so a single channel buried in an 87-item playlist is findable from the home screen |
 | **Music library (🎵)** | A searchable, folder-grouped albums grid with in-app playback (native `MediaPlayer`, folder playlist, live position) |
@@ -118,7 +119,7 @@ To load an IPTV channel list (or any `.m3u`/`.m3u8` playlist) onto the TV:
 
 Or pick a `.m3u` file from your device using the file picker — it's read, parsed, and imported in one step. Up to 500 channels per import (oldest links evicted when the list is full). No outbound calls; no per-site rules — the server imports whatever URLs the playlist contains.
 
-A playlist shows as a **single collapsible group** — on the phone's in-app card and on the TV's **🔗 Links** screen alike (not one row per channel). On the TV, press **MENU (☰)** on the group to save the whole playlist to the home screen for one-press access later, with no phone needed.
+A playlist shows as a **single collapsible group** — on the phone's in-app card and on the TV's **🔗 Links** screen alike (not one row per channel). On the TV, press **MENU (☰)** on the group to save the whole playlist to the home screen for one-press access later, with no phone needed. Opening any channel plays it in the **in-app channel player**, where **↑/↓ flips** through the rest of that playlist and per-channel `#EXTVLCOPT` headers (User-Agent/Referer) and the `url-tvg` EPG guide are carried through automatically.
 
 ---
 

@@ -81,7 +81,15 @@ data class StreamLink(
     /** Non-null when this link is one channel of an auto-expanded playlist group. */
     val group: String? = null,
     /** Channel logo URL (IPTV tvg-logo), or null. Loaded lazily into the tile. */
-    val logo: String? = null
+    val logo: String? = null,
+    /** IPTV `tvg-id`, used to match this channel against an EPG guide. */
+    val tvgId: String? = null,
+    /** Per-channel `#EXTVLCOPT:http-user-agent` — set on the player's data source so gated streams play. */
+    val userAgent: String? = null,
+    /** Per-channel `#EXTVLCOPT:http-referrer` — sent as the `Referer` header. */
+    val referrer: String? = null,
+    /** Playlist-level EPG guide URL (`url-tvg`), shared by every channel of the playlist, or null. */
+    val tvgUrl: String? = null,
 )
 
 /** A playlist the user saved to the TV Home: a name plus the links captured at save time. */

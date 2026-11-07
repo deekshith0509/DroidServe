@@ -42,14 +42,20 @@ class SavedStore(context: Context) {
         put("addedAt", l.addedAt); put("playable", l.playable)
         l.group?.let { put("group", it) }
         l.logo?.let { put("logo", it) }
+        l.tvgId?.let { put("tvgId", it) }
+        l.userAgent?.let { put("userAgent", it) }
+        l.referrer?.let { put("referrer", it) }
+        l.tvgUrl?.let { put("tvgUrl", it) }
     }
 
-    private fun jsonToLink(o: JSONObject) = StreamLink(
-        o.optString("id"), o.optString("url"), o.optString("label"),
-        o.optLong("addedAt"), o.optBoolean("playable", true),
-        o.optString("group", "").takeIf { it.isNotEmpty() },
-        o.optString("logo", "").takeIf { it.isNotEmpty() },
-    )
+    private fun jsonToLink(o: JSONObject): StreamLink {
+        fun s(k: String) = o.optString(k, "").takeIf { it.isNotEmpty() }
+        return StreamLink(
+            o.optString("id"), o.optString("url"), o.optString("label"),
+            o.optLong("addedAt"), o.optBoolean("playable", true),
+            s("group"), s("logo"), s("tvgId"), s("userAgent"), s("referrer"), s("tvgUrl"),
+        )
+    }
 
     fun playlists(): List<SavedPlaylist> = ArrayList(playlistList)
     fun channels(): List<StreamLink> = ArrayList(channelList)

@@ -27,6 +27,7 @@ import com.deekshith.droidserve.tv.ui.screens.ApkInstallScreen
 import com.deekshith.droidserve.tv.ui.screens.AudioPlayerScreen
 import com.deekshith.droidserve.tv.ui.screens.AuthScreen
 import com.deekshith.droidserve.tv.ui.screens.BrowseScreen
+import com.deekshith.droidserve.tv.ui.screens.ChannelPlayerScreen
 import com.deekshith.droidserve.tv.ui.screens.CrashScreen
 import com.deekshith.droidserve.tv.ui.screens.DiscoveryScreen
 import com.deekshith.droidserve.tv.ui.screens.LinkGroupScreen
@@ -88,6 +89,7 @@ class MainActivity : ComponentActivity() {
                             is UiScreen.AlbumSongs -> AlbumSongsScreen(s, vm::playSong)
                             is UiScreen.Links -> LinksScreen(s, vm::onLinkClick, vm::openLinkGroup, vm::saveLinkGroupToHome, vm::saveChannelToHome, vm::removeSavedPlaylist, vm::removeSavedChannel, vm::isGroupSaved, vm::isChannelSaved)
                             is UiScreen.LinkGroup -> LinkGroupScreen(s, vm::onLinkClick, vm::saveLinkGroupToHome, vm::saveChannelToHome, vm::removeSavedPlaylist, vm::removeSavedChannel, vm::isGroupSaved, vm::isChannelSaved)
+                            is UiScreen.ChannelPlayer -> ChannelPlayerScreen(s, vm::channelPrev, vm::channelNext, vm::jumpToChannel, vm::setChannelOverlay, vm::pushZapDigit, vm::openCurrentExternally)
                         }
                     }
                 }
