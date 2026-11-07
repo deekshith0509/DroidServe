@@ -423,6 +423,15 @@ class HttpServer(
                     val (v, list) = LinkStore.clear()
                     return cookie(jsonResponse(ApiJson.links(v, list)))
                 }
+                "api/links/export.m3u" -> {
+                    ServerStateHolder.incrementRequests()
+                    val body = M3uExport.export(LinkStore.snapshot().second)
+                    val resp = newFixedLengthResponse(Response.Status.OK, "audio/x-mpegurl", body)
+                    resp.addHeader("Content-Disposition", contentDisposition("droidserve-channels.m3u", inline = false))
+                    resp.addHeader("Cache-Control", "no-store")
+                    cors(resp)
+                    return cookie(resp)
+                }
                 "api/links/poll" -> {
                     // Like tv/poll: a long-poll that must NOT count as activity (would defeat auto-stop).
                     val since = params["since"]?.firstOrNull()?.toIntOrNull() ?: -1
