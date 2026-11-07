@@ -1,5 +1,7 @@
 package com.deekshith.droidserve.tv.ui.screens
 
+import android.os.Handler
+import android.os.Looper
 import android.view.KeyEvent
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
@@ -18,6 +20,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -46,34 +50,49 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.compose.ui.viewinterop.AndroidView
 import com.deekshith.droidserve.tv.StreamLink
 import com.deekshith.droidserve.tv.UiScreen
+import com.deekshith.droidserve.tv.ui.ContextAction
+import com.deekshith.droidserve.tv.ui.ContextMenu
 import com.deekshith.droidserve.tv.ui.DsColor
 import com.deekshith.droidserve.tv.ui.DsIcon
 import com.deekshith.droidserve.tv.ui.DsIcons
+import com.deekshith.droidserve.tv.ui.DsTextField
 import com.deekshith.droidserve.tv.ui.DsType
 import com.deekshith.droidserve.tv.ui.FocusRow
+import com.deekshith.droidserve.tv.ui.InitialFocus
+import com.deekshith.droidserve.tv.ui.NavChip
 import com.deekshith.droidserve.tv.ui.Thumb
 import com.deekshith.droidserve.tv.ui.iconForLink
 import kotlinx.coroutines.delay
 
 private const val DEFAULT_UA = "Mozilla/5.0 (Linux; Android TV) DroidServe/ExoPlayer"
+private const val MAX_RETRIES = 3
+
+private class Reconnect { var attempts = 0 }
 
 /**
  * Full-screen native IPTV player. One long-lived ExoPlayer plays the current channel; flipping
- * channels swaps the media source (no recreate → instant zap, flat RAM). D-pad up/down flips
- * channels, OK/left opens the channel-list overlay, digits zap to a number, MENU hands the current
- * channel to an external player. Per-channel User-Agent/Referer are set on the data source so
- * header-gated IPTV streams play. An optional now/next EPG bar shows when a guide is available.
+ * channels swaps the media source (no recreate → instant zap, flat RAM).
+ *
+ * Remote: **↑/↓** flip channels · **OK/←** channel-list overlay (category tabs + search) ·
+ * **→** last channel · **digits** zap · **MENU** audio/subtitle track · video fit · sleep timer ·
+ * open externally. Per-channel User-Agent/Referer are set on the data source so header-gated IPTV
+ * plays; dropped streams auto-reconnect; an optional now/next EPG bar shows when a guide exists.
  */
 @OptIn(UnstableApi::class)
 @Composable
@@ -85,29 +104,46 @@ fun ChannelPlayerScreen(
     onOverlay: (Boolean) -> Unit,
     onDigit: (Int) -> Unit,
     onExternal: () -> Unit,
+    onPreviousChannel: () -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val exo = remember { ExoPlayer.Builder(context).build().apply { playWhenReady = true } }
+    val recon = remember { Reconnect() }
+    val handler = remember { Handler(Looper.getMainLooper()) }
     var playerState by remember { mutableIntStateOf(Player.STATE_IDLE) }
     var failed by remember { mutableStateOf(false) }
+    var tracks by remember { mutableStateOf<Tracks?>(null) }
+    var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var sleepMin by remember { mutableIntStateOf(0) }
+    var slept by remember { mutableStateOf(false) }
 
     DisposableEffect(exo) {
         val listener = object : Player.Listener {
-            override fun onPlaybackStateChanged(s: Int) { playerState = s }
-            override fun onPlayerError(e: PlaybackException) { failed = true }
+            override fun onPlaybackStateChanged(s: Int) {
+                playerState = s
+                if (s == Player.STATE_READY) { recon.attempts = 0; failed = false }
+            }
+            override fun onPlayerError(e: PlaybackException) {
+                // Live IPTV streams drop constantly — re-prepare with backoff before giving up.
+                if (recon.attempts < MAX_RETRIES) {
+                    recon.attempts++
+                    handler.postDelayed({ runCatching { exo.prepare(); exo.play() } }, 1200L * recon.attempts)
+                } else failed = true
+            }
+            override fun onTracksChanged(t: Tracks) { tracks = t }
         }
         exo.addListener(listener)
-        onDispose { exo.removeListener(listener); exo.release() }
+        onDispose { handler.removeCallbacksAndMessages(null); exo.removeListener(listener); exo.release() }
     }
 
-    // Pause in the background (save bandwidth/CPU); resume on return. No teardown → no RAM churn.
     DisposableEffect(lifecycleOwner) {
         val obs = LifecycleEventObserver { _, e ->
             when (e) {
                 Lifecycle.Event.ON_STOP -> exo.pause()
-                Lifecycle.Event.ON_START -> exo.play()
+                Lifecycle.Event.ON_START -> if (!slept) exo.play()
                 else -> {}
             }
         }
@@ -117,24 +153,29 @@ fun ChannelPlayerScreen(
 
     val current = state.current
     LaunchedEffect(current.id) {
-        failed = false
+        failed = false; slept = false; recon.attempts = 0
+        handler.removeCallbacksAndMessages(null)
         val http = DefaultHttpDataSource.Factory()
             .setUserAgent(current.userAgent?.takeIf { it.isNotBlank() } ?: DEFAULT_UA)
             .setAllowCrossProtocolRedirects(true)
         current.referrer?.takeIf { it.isNotBlank() }?.let { http.setDefaultRequestProperties(mapOf("Referer" to it)) }
-        val source = DefaultMediaSourceFactory(http).createMediaSource(MediaItem.fromUri(current.url))
-        exo.setMediaSource(source)
-        exo.prepare()
-        exo.playWhenReady = true
+        exo.setMediaSource(DefaultMediaSourceFactory(http).createMediaSource(MediaItem.fromUri(current.url)))
+        exo.prepare(); exo.playWhenReady = true
+    }
+
+    // Sleep timer: after the chosen delay, pause and show a resume prompt. One-shot.
+    LaunchedEffect(sleepMin) {
+        if (sleepMin <= 0) return@LaunchedEffect
+        delay(sleepMin * 60_000L)
+        exo.pause(); slept = true
     }
 
     val playerFocus = remember { FocusRequester() }
     val overlayFocus = remember { FocusRequester() }
-    LaunchedEffect(state.overlayOpen) {
-        runCatching { if (state.overlayOpen) overlayFocus.requestFocus() else playerFocus.requestFocus() }
+    LaunchedEffect(state.overlayOpen, menuOpen) {
+        if (!state.overlayOpen && !menuOpen) runCatching { playerFocus.requestFocus() }
     }
 
-    // Info bar shows on channel change / EPG arrival, then auto-hides. Stays up while the overlay is open.
     var infoVisible by remember { mutableStateOf(true) }
     LaunchedEffect(state.index, state.epg) { infoVisible = true; delay(6000); infoVisible = false }
 
@@ -145,15 +186,24 @@ fun ChannelPlayerScreen(
             .focusRequester(playerFocus)
             .focusable()
             .onPreviewKeyEvent { ev ->
-                if (state.overlayOpen || ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                if (state.overlayOpen || menuOpen || ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 val code = ev.nativeKeyEvent.keyCode
+                if (slept) {
+                    return@onPreviewKeyEvent when (code) {
+                        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                        KeyEvent.KEYCODE_MEDIA_PLAY -> { slept = false; exo.play(); true }
+                        else -> false
+                    }
+                }
                 digitOf(code)?.let { onDigit(it); return@onPreviewKeyEvent true }
                 when (code) {
                     KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP -> { onPrev(); true }
                     KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN -> { onNext(); true }
-                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
-                    KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> { onOverlay(true); true }
-                    KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_BUTTON_MODE -> { onExternal(); true }
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_DPAD_LEFT -> { onOverlay(true); true }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> { onPreviousChannel(); true }
+                    KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_BUTTON_MODE -> { menuOpen = true; true }
+                    KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_SPACE ->
+                        { if (exo.isPlaying) exo.pause() else exo.play(); true }
                     else -> false
                 }
             },
@@ -169,22 +219,26 @@ fun ChannelPlayerScreen(
                     setBackgroundColor(android.graphics.Color.BLACK)
                 }
             },
+            update = { it.resizeMode = resizeMode },
         )
 
-        if (playerState == Player.STATE_BUFFERING && !failed) {
+        if (playerState == Player.STATE_BUFFERING && !failed && !slept) {
             CircularProgressIndicator(color = DsColor.Amber, modifier = Modifier.align(Alignment.Center).size(48.dp))
         }
 
-        if (failed) {
-            Column(
-                Modifier.align(Alignment.Center).padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
+        if (slept) {
+            Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                DsIcon(DsIcons.Play, tint = DsColor.Amber, size = 40.dp)
+                Spacer(Modifier.height(10.dp))
+                Text("Sleep timer — press OK to resume", style = DsType.Title)
+            }
+        } else if (failed) {
+            Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 DsIcon(DsIcons.Warning, tint = DsColor.Coral, size = 40.dp)
                 Spacer(Modifier.height(10.dp))
                 Text("Can't play “${current.label}”", style = DsType.Title)
                 Spacer(Modifier.height(4.dp))
-                Text("Press ↑/↓ for another channel, or MENU to open in an external player.", style = DsType.Meta)
+                Text("Press ↑/↓ for another channel, or MENU → open externally.", style = DsType.Meta)
             }
         }
 
@@ -196,16 +250,67 @@ fun ChannelPlayerScreen(
             ) { Text(state.numberInput, style = DsType.Hero.copy(color = DsColor.Amber)) }
         }
 
-        if (infoVisible || state.overlayOpen) {
+        if ((infoVisible || state.overlayOpen) && !slept) {
             ChannelInfoBar(state, Modifier.align(Alignment.BottomStart))
         }
 
         if (state.overlayOpen) {
-            ChannelOverlay(state, overlayFocus, onJump) { onOverlay(false) }
+            ChannelOverlay(state, overlayFocus, onJump)
         }
     }
 
+    if (menuOpen) {
+        ContextMenu("Player", playerMenuActions(exo, tracks, resizeMode, sleepMin, { resizeMode = it }, { sleepMin = it; slept = false }, onExternal), onDismiss = { menuOpen = false })
+    }
+
     LaunchedEffect(Unit) { runCatching { playerFocus.requestFocus() } }
+}
+
+@OptIn(UnstableApi::class)
+private fun playerMenuActions(
+    exo: ExoPlayer,
+    tracks: Tracks?,
+    resizeMode: Int,
+    sleepMin: Int,
+    onResize: (Int) -> Unit,
+    onSleep: (Int) -> Unit,
+    onExternal: () -> Unit,
+): List<ContextAction> = buildList {
+    val groups = tracks?.groups ?: emptyList()
+    val audio = groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+    if (audio.sumOf { it.length } > 1) {
+        audio.forEach { g ->
+            for (i in 0 until g.length) {
+                if (!g.isTrackSupported(i)) continue
+                val sel = g.isTrackSelected(i)
+                add(ContextAction((if (sel) "● " else "") + "Audio · " + trackName(g.getTrackFormat(i), i), DsIcons.Play) {
+                    exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+                        .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i)).build()
+                })
+            }
+        }
+    }
+    val text = groups.filter { it.type == C.TRACK_TYPE_TEXT }
+    if (text.isNotEmpty()) {
+        add(ContextAction("Subtitles · Off", DsIcons.ListView) {
+            exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+        })
+        text.forEach { g ->
+            for (i in 0 until g.length) {
+                if (!g.isTrackSupported(i)) continue
+                val sel = g.isTrackSelected(i)
+                add(ContextAction((if (sel) "● " else "") + "Subtitle · " + trackName(g.getTrackFormat(i), i), DsIcons.ListView) {
+                    exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                        .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i)).build()
+                })
+            }
+        }
+    }
+    add(ContextAction("Video fit · ${fitName(resizeMode)}", DsIcons.ListView) { onResize(nextFit(resizeMode)) })
+    add(ContextAction("Sleep timer · ${sleepName(sleepMin)}", DsIcons.Chevron) { onSleep(nextSleep(sleepMin)) })
+    add(ContextAction("Open in external player", DsIcons.Link) { onExternal() })
 }
 
 @Composable
@@ -213,10 +318,7 @@ private fun ChannelInfoBar(state: UiScreen.ChannelPlayer, modifier: Modifier) {
     val ch = state.current
     val epg = state.epg
     Column(
-        modifier
-            .fillMaxWidth()
-            .background(DsColor.Ink.copy(alpha = 0.82f))
-            .padding(horizontal = 36.dp, vertical = 18.dp),
+        modifier.fillMaxWidth().background(DsColor.Ink.copy(alpha = 0.82f)).padding(horizontal = 36.dp, vertical = 18.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("${state.index + 1}", style = DsType.Title.copy(color = DsColor.Amber))
@@ -235,9 +337,8 @@ private fun ChannelInfoBar(state: UiScreen.ChannelPlayer, modifier: Modifier) {
                 }
                 Text(sub, style = DsType.Meta, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            Text("OK list · ↑↓ zap · ☰ ext", style = DsType.Caption)
+            Text("OK list · ↑↓ zap · → last · ☰ menu", style = DsType.Caption)
         }
-        // Thin progress line through the current programme, when the guide gives a window.
         epg?.progress(System.currentTimeMillis())?.let { p ->
             Spacer(Modifier.height(8.dp))
             Box(Modifier.fillMaxWidth().height(3.dp).background(DsColor.Line)) {
@@ -248,53 +349,97 @@ private fun ChannelInfoBar(state: UiScreen.ChannelPlayer, modifier: Modifier) {
 }
 
 @Composable
-private fun ChannelOverlay(
-    state: UiScreen.ChannelPlayer,
-    firstFocus: FocusRequester,
-    onJump: (Int) -> Unit,
-    onClose: () -> Unit,
-) {
+private fun ChannelOverlay(state: UiScreen.ChannelPlayer, firstFocus: FocusRequester, onJump: (Int) -> Unit) {
+    var category by remember { mutableStateOf<String?>(null) }
+    var query by remember { mutableStateOf("") }
+    val categories = remember(state.channels) { state.channels.mapNotNull { it.group }.distinct() }
+    val f = query.trim().lowercase()
+    val filtered = remember(state.channels, category, f) {
+        state.channels.withIndex().filter { (_, ch) ->
+            (category == null || ch.group == category) && (f.isEmpty() || ch.label.lowercase().contains(f))
+        }
+    }
+    val focusRow = filtered.indexOfFirst { it.index == state.index }.let { if (it >= 0) it else 0 }
     val listState = rememberLazyListState()
-    LaunchedEffect(Unit) { runCatching { listState.scrollToItem(state.index.coerceAtLeast(0)) } }
-    Box(
-        Modifier
-            .fillMaxHeight()
-            .width(380.dp)
-            .background(DsColor.Ink.copy(alpha = 0.95f))
-            .onPreviewKeyEvent { ev ->
-                if (ev.type == KeyEventType.KeyDown &&
-                    (ev.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
-                        ev.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_BACK)
-                ) { onClose(); true } else false
-            },
-    ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 22.dp),
-        ) {
-            items(state.channels.size, key = { state.channels[it].id }) { i ->
-                val ch = state.channels[i]
-                val mod = if (i == state.index) Modifier.focusRequester(firstFocus) else Modifier
-                FocusRow(onClick = { onJump(i) }, modifier = mod) { focused ->
-                    Text("${i + 1}", style = DsType.Caption.copy(color = if (i == state.index) DsColor.Amber else DsColor.Muted),
-                        modifier = Modifier.width(34.dp))
-                    if (ch.logo != null) {
-                        Thumb(ch.logo, iconForLink(ch.url), Modifier.size(32.dp).clip(RoundedCornerShape(6.dp)),
-                            fallbackTint = if (focused) DsColor.Amber else DsColor.Muted, iconSize = 18.dp, contentScale = ContentScale.Fit)
-                    } else {
-                        DsIcon(iconForLink(ch.url), tint = if (focused) DsColor.Amber else DsColor.Muted, size = 22.dp)
+    LaunchedEffect(category, f) { runCatching { listState.scrollToItem(focusRow.coerceAtLeast(0)) } }
+
+    Box(Modifier.fillMaxHeight().width(420.dp).background(DsColor.Ink.copy(alpha = 0.96f))) {
+        Column(Modifier.fillMaxSize().padding(16.dp)) {
+            DsTextField(query, { query = it }, "Search channels…", Modifier.fillMaxWidth())
+            if (categories.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    item { NavChip("All", null, active = category == null) { category = null } }
+                    items(categories.size) { i ->
+                        val c = categories[i]
+                        NavChip(c, null, active = category == c) { category = c }
                     }
-                    Spacer(Modifier.width(12.dp))
-                    Text(ch.label, style = DsType.Item, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f))
-                    if (i == state.index) DsIcon(DsIcons.Play, tint = DsColor.Amber, size = 16.dp)
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            if (filtered.isEmpty()) {
+                Text("No channels match", style = DsType.Meta)
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    contentPadding = PaddingValues(vertical = 6.dp),
+                ) {
+                    items(filtered.size, key = { filtered[it].value.id }) { r ->
+                        val gi = filtered[r].index
+                        val ch = filtered[r].value
+                        val mod = if (r == focusRow) Modifier.focusRequester(firstFocus) else Modifier
+                        FocusRow(onClick = { onJump(gi) }, modifier = mod) { focused ->
+                            Text("${gi + 1}", style = DsType.Caption.copy(color = if (gi == state.index) DsColor.Amber else DsColor.Muted),
+                                modifier = Modifier.width(34.dp))
+                            if (ch.logo != null) {
+                                Thumb(ch.logo, iconForLink(ch.url), Modifier.size(32.dp).clip(RoundedCornerShape(6.dp)),
+                                    fallbackTint = if (focused) DsColor.Amber else DsColor.Muted, iconSize = 18.dp, contentScale = ContentScale.Fit)
+                            } else {
+                                DsIcon(iconForLink(ch.url), tint = if (focused) DsColor.Amber else DsColor.Muted, size = 22.dp)
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Text(ch.label, style = DsType.Item, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                            if (gi == state.index) DsIcon(DsIcons.Play, tint = DsColor.Amber, size = 16.dp)
+                        }
+                    }
                 }
             }
         }
     }
+    InitialFocus(firstFocus, enabled = filtered.isNotEmpty(), state.index, category, f)
 }
+
+@OptIn(UnstableApi::class)
+private fun trackName(f: Format, i: Int): String {
+    val lang = f.language?.let { langLabel(it) }
+    return lang ?: f.label ?: "Track ${i + 1}"
+}
+
+private fun langLabel(code: String): String = when (code.lowercase().take(3)) {
+    "tel" -> "Telugu"; "hin" -> "Hindi"; "eng" -> "English"; "tam" -> "Tamil"
+    "kan" -> "Kannada"; "mal" -> "Malayalam"; "ben" -> "Bengali"; "mar" -> "Marathi"
+    "guj" -> "Gujarati"; "urd" -> "Urdu"; "pan" -> "Punjabi"; "ori" -> "Odia"
+    else -> code.uppercase()
+}
+
+@OptIn(UnstableApi::class)
+private fun fitName(mode: Int): String = when (mode) {
+    AspectRatioFrameLayout.RESIZE_MODE_FILL -> "Fill"
+    AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> "Zoom"
+    else -> "Fit"
+}
+
+@OptIn(UnstableApi::class)
+private fun nextFit(mode: Int): Int = when (mode) {
+    AspectRatioFrameLayout.RESIZE_MODE_FIT -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+    AspectRatioFrameLayout.RESIZE_MODE_FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+}
+
+private fun sleepName(min: Int): String = if (min <= 0) "Off" else "$min min"
+private fun nextSleep(min: Int): Int = when (min) { 0 -> 15; 15 -> 30; 30 -> 60; else -> 0 }
 
 private fun digitOf(code: Int): Int? = when (code) {
     in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> code - KeyEvent.KEYCODE_0

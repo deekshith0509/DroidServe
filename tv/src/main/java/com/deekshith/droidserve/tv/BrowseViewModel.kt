@@ -207,6 +207,8 @@ sealed interface UiScreen {
         val overlayOpen: Boolean = false,
         val numberInput: String = "",
         val epg: EpgNowNext? = null,
+        /** The channel we were on before this one, for the remote's "last channel" flip-back. */
+        val prevIndex: Int? = null,
     ) : UiScreen {
         val current: StreamLink get() = channels[index]
     }
@@ -556,15 +558,21 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         val s = _screen.value as? UiScreen.ChannelPlayer ?: return
         val n = s.channels.size; if (n == 0) return
         val idx = ((s.index + delta) % n + n) % n   // wrap both directions
-        _screen.value = s.copy(index = idx, numberInput = "", epg = null)
+        _screen.value = s.copy(index = idx, numberInput = "", epg = null, prevIndex = s.index)
         loadEpg(s.channels[idx])
     }
 
     fun jumpToChannel(index: Int) {
         val s = _screen.value as? UiScreen.ChannelPlayer ?: return
-        if (index !in s.channels.indices) return
-        _screen.value = s.copy(index = index, overlayOpen = false, numberInput = "", epg = null)
+        if (index !in s.channels.indices || index == s.index) { setChannelOverlay(false); return }
+        _screen.value = s.copy(index = index, overlayOpen = false, numberInput = "", epg = null, prevIndex = s.index)
         loadEpg(s.channels[index])
+    }
+
+    /** Remote "last channel" button — flip back to the previously-watched channel. */
+    fun previousChannel() {
+        val s = _screen.value as? UiScreen.ChannelPlayer ?: return
+        s.prevIndex?.takeIf { it in s.channels.indices }?.let { jumpToChannel(it) }
     }
 
     fun setChannelOverlay(open: Boolean) {
