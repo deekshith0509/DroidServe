@@ -706,7 +706,7 @@ body.tv,body.tv *{cursor:none!important}
 <div class="mu-bar" id="mubar" style="display:none"><button class="mu-nav" id="muprev">‹</button><audio id="muaudio" controls preload="auto"></audio><button class="mu-nav" id="munext">›</button><span class="mu-now" id="munow"></span></div>
 </div>
 <div class="mu-ov" id="lkov">
-<div class="mu-hd lk-hd"><span class="mu-ttl">🔗 Links</span><input type="url" id="lkin" placeholder="Paste a video, stream, or .m3u playlist URL…" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Streaming URL to send to the TV"><button class="sb" id="lkadd">Send to TV</button><button class="pl-x" id="lkx" title="Close (Esc)">✕</button></div>
+<div class="mu-hd lk-hd"><span class="mu-ttl">🔗 Links</span><input type="url" id="lkin" placeholder="Paste a video, stream, or .m3u playlist URL…" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Streaming URL to send to the TV"><button class="sb" id="lkadd">Send to TV</button><a class="sb" id="lkexp" href="/api/links/export.m3u" download title="Export all channels as .m3u">⬇&nbsp;.m3u</a><button class="pl-x" id="lkx" title="Close (Esc)">✕</button></div>
 <div class="mu-body" id="lkbody" style="flex:1"></div>
 <div class="lk-import" id="lkimport">
 <div class="lk-import-ttl">📋 Import playlist</div>
@@ -1088,18 +1088,25 @@ inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault(
 document.addEventListener('keydown',function(e){if(ov.classList.contains('on')&&e.key==='Escape')closeOv();});
 // ── Import section ────────────────────────────────────────────────────────────
 function setInfo(html){if(iinfo)iinfo.innerHTML=html;}
+var lastUrl='';
 function importDone(d){
   render(d);
+  var extra=lastUrl?' <button class="sb" id="lkrefr" style="margin-left:8px">🔄 Refresh</button>':'';
   setInfo('<div style="color:#4ade80">✓ Imported '+d.added+' channel'+(d.added!==1?'s':'')+
-    (d.skipped?' · '+d.skipped+' skipped':'')+' </div>');
+    (d.skipped?' · '+d.skipped+' skipped':'')+extra+'</div>');
+  var rb=document.getElementById('lkrefr');if(rb)rb.addEventListener('click',function(){doRefresh(lastUrl);});
   if(iurl)iurl.value='';
 }
+function doRefresh(u){if(!u)return;setInfo('<span style="color:var(--mu)">Refreshing…</span>');
+  fetch('/api/links/refresh?url='+encodeURIComponent(u),{credentials:'same-origin'})
+    .then(function(r){return r.ok?r.json():Promise.reject('Could not refresh');})
+    .then(importDone).catch(importFail);}
 function importFail(msg){setInfo('<div style="color:#f87171">'+esc(msg||'Import failed')+'</div>');}
 function doImportUrl(u){
   setInfo('<span style="color:var(--mu)">Importing…</span>');
   fetch('/api/links/import?url='+encodeURIComponent(u),{method:'POST',credentials:'same-origin',body:''})
     .then(function(r){return r.ok?r.json():Promise.reject(r.status===413?'Playlist too large':'Could not import');})
-    .then(importDone).catch(importFail);
+    .then(function(d){lastUrl=u;importDone(d);}).catch(importFail);
 }
 function doImportText(text){
   setInfo('<span style="color:var(--mu)">Importing…</span>');

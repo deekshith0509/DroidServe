@@ -85,6 +85,12 @@ object LinkStore {
         version to ArrayList(links)
     }
 
+    /** Drop every link tagged with [group] — used to replace a playlist's channels on refresh. */
+    fun removeGroup(group: String): Pair<Int, List<Link>> = synchronized(lock) {
+        if (links.removeAll { it.group == group }) bump()
+        version to ArrayList(links)
+    }
+
     fun clear(): Pair<Int, List<Link>> = synchronized(lock) {
         if (links.isNotEmpty()) { links.clear(); bump() }
         version to ArrayList(links)
