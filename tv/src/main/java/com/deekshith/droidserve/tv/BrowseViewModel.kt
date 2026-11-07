@@ -22,7 +22,7 @@ enum class ViewerKind { TEXT, IMAGE }
 
 enum class ApkPhase { DOWNLOADING, READY, FAILED }
 
-enum class CatalogTab { LANGUAGES, COUNTRIES, CATEGORIES }
+enum class CatalogTab { FEATURED, LANGUAGES, COUNTRIES, CATEGORIES }
 
 /** One row of the TV guide: a channel plus its now/next programme (null when no guide data). */
 data class GuideRow(val index: Int, val channel: StreamLink, val epg: EpgNowNext?)
@@ -222,7 +222,7 @@ sealed interface UiScreen {
 
     /** The in-app iptv-org "Discover" catalog: browse Language/Country/Category bundles and load one. */
     data class Catalog(
-        val tab: CatalogTab = CatalogTab.LANGUAGES,
+        val tab: CatalogTab = CatalogTab.FEATURED,
         val data: IptvCatalog.Data? = null,
         val loading: Boolean = true,
         val error: String? = null,
@@ -230,6 +230,7 @@ sealed interface UiScreen {
         val loadingBundle: String? = null,
     ) : UiScreen {
         val entries: List<IptvCatalog.Entry> get() = when (tab) {
+            CatalogTab.FEATURED -> data?.featured ?: emptyList()
             CatalogTab.LANGUAGES -> data?.languages ?: emptyList()
             CatalogTab.COUNTRIES -> data?.countries ?: emptyList()
             CatalogTab.CATEGORIES -> data?.categories ?: emptyList()
@@ -631,12 +632,15 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── iptv-org Discover catalog ──────────────────────────────────────────
     fun openCatalog() {
-        _screen.value = UiScreen.Catalog(loading = catalogData == null, data = catalogData)
+        // Featured + Languages are instant (static); only Countries/Categories need a fetch.
+        val data = catalogData ?: IptvCatalog.Data(IptvCatalog.featured(), IptvCatalog.languages(), emptyList(), emptyList())
+        _screen.value = UiScreen.Catalog(data = data, loading = catalogData == null)
         if (catalogData == null) viewModelScope.launch {
             try {
-                val d = IptvCatalog.load()
-                catalogData = d
-                (_screen.value as? UiScreen.Catalog)?.let { _screen.value = it.copy(data = d, loading = false) }
+                val (countries, categories) = IptvCatalog.fetchRemote()
+                val full = IptvCatalog.Data(IptvCatalog.featured(), IptvCatalog.languages(), countries, categories)
+                catalogData = full
+                (_screen.value as? UiScreen.Catalog)?.let { _screen.value = it.copy(data = full, loading = false) }
             } catch (e: Exception) {
                 (_screen.value as? UiScreen.Catalog)?.let { _screen.value = it.copy(loading = false, error = e.message ?: "Couldn't load catalog") }
             }
@@ -651,7 +655,10 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         val cat = _screen.value as? UiScreen.Catalog ?: return
         _screen.value = cat.copy(loadingBundle = entry.label)
         viewModelScope.launch {
-            val channels = runCatching { IptvCatalog.fetchBundle(entry.url) }.getOrDefault(emptyList())
+            val channels = runCatching {
+                if (entry.builtin) withContext(Dispatchers.IO) { readBuiltinBundle(entry.code) }
+                else IptvCatalog.fetchBundle(entry.url)
+            }.getOrDefault(emptyList())
             val cur = _screen.value as? UiScreen.Catalog ?: return@launch
             if (channels.isEmpty()) {
                 _screen.value = cur.copy(loadingBundle = null, error = "No channels found in “${entry.label}”")
@@ -660,6 +667,19 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 openChannelPlayer(channels, 0, title = entry.label)
             }
         }
+    }
+
+    // Load a bundle shipped inside the app (res/raw) — fully offline, no network. The R.raw
+    // reference is static so release resource-shrinking keeps the file (name lookup wouldn't).
+    private fun readBuiltinBundle(rawName: String): List<StreamLink> {
+        val app = getApplication<Application>()
+        val id = when (rawName) {
+            "hyderabad_telugu" -> R.raw.hyderabad_telugu
+            else -> app.resources.getIdentifier(rawName, "raw", app.packageName)
+        }
+        if (id == 0) return emptyList()
+        val text = app.resources.openRawResource(id).bufferedReader().use { it.readText() }
+        return TvPlaylist.parse(text)
     }
 
     fun channelNext() = shiftChannel(1)

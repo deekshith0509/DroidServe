@@ -54,14 +54,15 @@ fun DiscoverScreen(
             )
             Spacer(Modifier.height(16.dp))
             androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                NavChip("Featured", DsIcons.Play, active = state.tab == CatalogTab.FEATURED) { onTab(CatalogTab.FEATURED) }
                 NavChip("Languages", DsIcons.ListView, active = state.tab == CatalogTab.LANGUAGES) { onTab(CatalogTab.LANGUAGES) }
                 NavChip("Countries", DsIcons.Device, active = state.tab == CatalogTab.COUNTRIES) { onTab(CatalogTab.COUNTRIES) }
                 NavChip("Categories", DsIcons.Grid, active = state.tab == CatalogTab.CATEGORIES) { onTab(CatalogTab.CATEGORIES) }
             }
             Spacer(Modifier.height(16.dp))
             when {
-                state.loading -> DsLoading("Loading catalog…")
-                state.error != null -> StateMessage(DsIcons.Warning, "Couldn't load", state.error, iconTint = DsColor.Coral)
+                state.entries.isEmpty() && state.loading -> DsLoading("Loading catalog…")
+                state.entries.isEmpty() && state.error != null -> StateMessage(DsIcons.Warning, "Couldn't load", state.error, iconTint = DsColor.Coral)
                 state.entries.isEmpty() -> StateMessage(DsIcons.Search, "Nothing here", "Try another tab.")
                 else -> {
                     val listState = rememberLazyListState()
@@ -102,5 +103,5 @@ fun DiscoverScreen(
             }
         }
     }
-    InitialFocus(firstFocus, enabled = !state.loading && state.error == null && state.entries.isNotEmpty(), state.tab, state.entries.size)
+    InitialFocus(firstFocus, enabled = state.entries.isNotEmpty(), state.tab, state.entries.size)
 }
