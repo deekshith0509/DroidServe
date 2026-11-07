@@ -89,7 +89,7 @@ class MainActivity : ComponentActivity() {
                             is UiScreen.AlbumSongs -> AlbumSongsScreen(s, vm::playSong)
                             is UiScreen.Links -> LinksScreen(s, vm::onLinkClick, vm::openLinkGroup, vm::saveLinkGroupToHome, vm::saveChannelToHome, vm::removeSavedPlaylist, vm::removeSavedChannel, vm::isGroupSaved, vm::isChannelSaved)
                             is UiScreen.LinkGroup -> LinkGroupScreen(s, vm::onLinkClick, vm::saveLinkGroupToHome, vm::saveChannelToHome, vm::removeSavedPlaylist, vm::removeSavedChannel, vm::isGroupSaved, vm::isChannelSaved)
-                            is UiScreen.ChannelPlayer -> ChannelPlayerScreen(s, vm::channelPrev, vm::channelNext, vm::jumpToChannel, vm::setChannelOverlay, vm::pushZapDigit, vm::openCurrentExternally)
+                            is UiScreen.ChannelPlayer -> ChannelPlayerScreen(s, vm::channelPrev, vm::channelNext, vm::jumpToChannel, vm::setChannelOverlay, vm::pushZapDigit, vm::openCurrentExternally, vm::previousChannel)
                         }
                     }
                 }
