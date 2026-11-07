@@ -28,7 +28,7 @@ object LinkIngest {
             }
             is StreamResolver.Outcome.Collection -> {
                 val group = groupNameFor(url)
-                val (v, list) = LinkStore.addBatch(o.entries.map { Triple(it.url, it.title, it.logo) }, group)
+                val (v, list) = LinkStore.addBatch(o.entries.map { LinkStore.NewLink(it.url, it.title, it.logo, it.tvgId, it.userAgent, it.referrer, it.tvgUrl) }, group)
                 Result(v, list, o.entries.size, group, true)
             }
         }

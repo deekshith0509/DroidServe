@@ -108,4 +108,59 @@ class PlaylistImportTest {
         assertEquals("MyGroup", entries[0].group)
         assertFalse("title must not contain group", entries[0].title.contains("MyGroup"))
     }
+
+    @Test fun parse_tvgIdAndLogoCaptured() {
+        val m3u = "#EXTM3U\n#EXTINF:-1 tvg-id=\"StarMaa.in\" tvg-logo=\"http://l/s.png\" group-title=\"Telugu\",Star Maa\nhttp://s/live.ts"
+        val e = PlaylistImport.parse(m3u)[0]
+        assertEquals("StarMaa.in", e.tvgId)
+        assertEquals("http://l/s.png", e.logo)
+        assertEquals("Telugu", e.group)
+        assertEquals("Star Maa", e.title)
+    }
+
+    @Test fun parse_extVlcOptHeadersAttachedToFollowingEntry() {
+        val m3u = """
+            #EXTM3U
+            #EXTINF:-1,Gated Channel
+            #EXTVLCOPT:http-user-agent=SmartTV/2.0
+            #EXTVLCOPT:http-referrer=http://portal.example/
+            http://s/gated.ts
+        """.trimIndent()
+        val e = PlaylistImport.parse(m3u)[0]
+        assertEquals("SmartTV/2.0", e.userAgent)
+        assertEquals("http://portal.example/", e.referrer)
+        assertEquals("http://s/gated.ts", e.url)
+    }
+
+    @Test fun parse_vlcOptsDoNotLeakToNextEntry() {
+        val m3u = """
+            #EXTM3U
+            #EXTINF:-1,A
+            #EXTVLCOPT:http-user-agent=AgentA
+            http://s/a.ts
+            #EXTINF:-1,B
+            http://s/b.ts
+        """.trimIndent()
+        val es = PlaylistImport.parse(m3u)
+        assertEquals("AgentA", es[0].userAgent)
+        assertNull("per-channel header must not carry over", es[1].userAgent)
+    }
+
+    @Test fun parse_urlTvgGuideFromHeaderCopiedToEveryEntry() {
+        val m3u = """
+            #EXTM3U url-tvg="http://guide.example/epg.xml.gz"
+            #EXTINF:-1 tvg-id="a",A
+            http://s/a.ts
+            #EXTINF:-1 tvg-id="b",B
+            http://s/b.ts
+        """.trimIndent()
+        val es = PlaylistImport.parse(m3u)
+        assertEquals("http://guide.example/epg.xml.gz", es[0].tvgUrl)
+        assertEquals("http://guide.example/epg.xml.gz", es[1].tvgUrl)
+    }
+
+    @Test fun parse_extGrpUsedWhenNoGroupTitle() {
+        val m3u = "#EXTM3U\n#EXTINF:-1,Ch\n#EXTGRP:Movies\nhttp://s/x.ts"
+        assertEquals("Movies", PlaylistImport.parse(m3u)[0].group)
+    }
 }

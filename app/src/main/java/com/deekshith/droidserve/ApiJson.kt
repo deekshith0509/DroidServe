@@ -82,19 +82,29 @@ object ApiJson {
         }
     }
 
+    // One link object. Null metadata keys are omitted (never serialized as "null"). Shared by the
+    // links list, the import result, and anything else returning links, so the wire shape is one place.
+    private fun appendLink(sb: StringBuilder, l: LinkStore.Link) {
+        sb.append("{\"id\":\"").append(escape(l.id)).append("\",")
+        sb.append("\"url\":\"").append(escape(l.url)).append("\",")
+        sb.append("\"label\":\"").append(escape(l.label)).append("\",")
+        sb.append("\"addedAt\":").append(l.addedAt).append(',')
+        sb.append("\"playable\":").append(l.playable)
+        if (l.group != null) { sb.append(",\"group\":\""); sb.append(escape(l.group)); sb.append('"') }
+        if (l.logo != null) { sb.append(",\"logo\":\""); sb.append(escape(l.logo)); sb.append('"') }
+        if (l.tvgId != null) { sb.append(",\"tvgId\":\""); sb.append(escape(l.tvgId)); sb.append('"') }
+        if (l.userAgent != null) { sb.append(",\"userAgent\":\""); sb.append(escape(l.userAgent)); sb.append('"') }
+        if (l.referrer != null) { sb.append(",\"referrer\":\""); sb.append(escape(l.referrer)); sb.append('"') }
+        if (l.tvgUrl != null) { sb.append(",\"tvgUrl\":\""); sb.append(escape(l.tvgUrl)); sb.append('"') }
+        sb.append('}')
+    }
+
     /** Serialize the external-links list (version + newest-first links) for the web UI and TV. */
     fun links(version: Int, links: List<LinkStore.Link>): String = buildString {
         append("{\"version\":").append(version).append(",\"links\":[")
         for ((i, l) in links.withIndex()) {
             if (i > 0) append(',')
-            append("{\"id\":\"").append(escape(l.id)).append("\",")
-            append("\"url\":\"").append(escape(l.url)).append("\",")
-            append("\"label\":\"").append(escape(l.label)).append("\",")
-            append("\"addedAt\":").append(l.addedAt).append(',')
-            append("\"playable\":").append(l.playable)
-            if (l.group != null) { append(",\"group\":\""); append(escape(l.group)); append('"') }
-            if (l.logo != null) { append(",\"logo\":\""); append(escape(l.logo)); append('"') }
-            append('}')
+            appendLink(this, l)
         }
         append("]}")
     }
@@ -107,14 +117,7 @@ object ApiJson {
         append(",\"links\":[")
         for ((i, l) in links.withIndex()) {
             if (i > 0) append(',')
-            append("{\"id\":\"").append(escape(l.id)).append("\",")
-            append("\"url\":\"").append(escape(l.url)).append("\",")
-            append("\"label\":\"").append(escape(l.label)).append("\",")
-            append("\"addedAt\":").append(l.addedAt).append(',')
-            append("\"playable\":").append(l.playable)
-            if (l.group != null) { append(",\"group\":\""); append(escape(l.group)); append('"') }
-            if (l.logo != null) { append(",\"logo\":\""); append(escape(l.logo)); append('"') }
-            append('}')
+            appendLink(this, l)
         }
         append("]}")
     }
