@@ -106,6 +106,7 @@ fun ChannelPlayerScreen(
     onExternal: () -> Unit,
     onPreviousChannel: () -> Unit,
     onSaveToHome: () -> Unit,
+    onGuide: () -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -261,7 +262,7 @@ fun ChannelPlayerScreen(
     }
 
     if (menuOpen) {
-        ContextMenu("Player", playerMenuActions(exo, tracks, resizeMode, sleepMin, { resizeMode = it }, { sleepMin = it; slept = false }, onExternal, state.title, onSaveToHome), onDismiss = { menuOpen = false })
+        ContextMenu("Player", playerMenuActions(exo, tracks, resizeMode, sleepMin, { resizeMode = it }, { sleepMin = it; slept = false }, onExternal, state.title, onSaveToHome, onGuide), onDismiss = { menuOpen = false })
     }
 
     LaunchedEffect(Unit) { runCatching { playerFocus.requestFocus() } }
@@ -278,7 +279,9 @@ private fun playerMenuActions(
     onExternal: () -> Unit,
     saveTitle: String?,
     onSave: () -> Unit,
+    onGuide: () -> Unit,
 ): List<ContextAction> = buildList {
+    add(ContextAction("TV guide (now & next)", DsIcons.Info) { onGuide() })
     if (saveTitle != null) add(ContextAction("Save “$saveTitle” to Home", DsIcons.Link) { onSave() })
     val groups = tracks?.groups ?: emptyList()
     val audio = groups.filter { it.type == C.TRACK_TYPE_AUDIO }

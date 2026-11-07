@@ -24,6 +24,9 @@ enum class ApkPhase { DOWNLOADING, READY, FAILED }
 
 enum class CatalogTab { LANGUAGES, COUNTRIES, CATEGORIES }
 
+/** One row of the TV guide: a channel plus its now/next programme (null when no guide data). */
+data class GuideRow(val index: Int, val channel: StreamLink, val epg: EpgNowNext?)
+
 /** A media stream to hand to the OS default player (VLC/MX/etc) via ACTION_VIEW. */
 data class OpenRequest(
     val url: String,
@@ -232,6 +235,15 @@ sealed interface UiScreen {
             CatalogTab.CATEGORIES -> data?.categories ?: emptyList()
         }
     }
+
+    /** The now/next TV guide for the current playlist (built from its XMLTV `url-tvg`, when present). */
+    data class EpgGuide(
+        val channels: List<StreamLink>,
+        val rows: List<GuideRow>,
+        val loading: Boolean,
+        val title: String?,
+        val currentIndex: Int,
+    ) : UiScreen
 }
 
 class BrowseViewModel(app: Application) : AndroidViewModel(app) {
@@ -284,6 +296,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private var epgJob: Job? = null
     private var zapJob: Job? = null
     private var catalogData: IptvCatalog.Data? = null   // cached iptv-org index, loaded once
+    private var guidePlayer: UiScreen.ChannelPlayer? = null   // player to restore when leaving the TV guide
 
     init {
         GridDensity.intValue = prefs.getInt("density", 1)   // restore app-wide grid density
@@ -661,6 +674,31 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         _open.tryEmit(OpenRequest(s.current.url, mimeForUrl(s.current.url), forceChooser = true))
     }
 
+    /** Open the now/next TV guide for the current player's channels. */
+    fun openEpgGuide() {
+        val p = _screen.value as? UiScreen.ChannelPlayer ?: return
+        guidePlayer = p
+        _screen.value = UiScreen.EpgGuide(p.channels, emptyList(), loading = true, title = p.title, currentIndex = p.index)
+        val guide = p.channels.firstNotNullOfOrNull { it.tvgUrl }
+        val wanted = p.channels.mapNotNull { it.tvgId }.toSet()
+        viewModelScope.launch {
+            val rows = p.channels.mapIndexed { i, ch ->
+                val nn = if (guide != null && !ch.tvgId.isNullOrBlank())
+                    runCatching { Epg.nowNextFor(guide, ch.tvgId, wanted) }.getOrNull() else null
+                GuideRow(i, ch, nn)
+            }
+            (_screen.value as? UiScreen.EpgGuide)?.let { _screen.value = it.copy(rows = rows, loading = false) }
+        }
+    }
+
+    /** Pick a channel from the guide — return to the player on that channel. */
+    fun pickGuideChannel(index: Int) {
+        val p = guidePlayer ?: return
+        if (index !in p.channels.indices) return
+        _screen.value = p.copy(index = index, epg = null, overlayOpen = false, numberInput = "", prevIndex = p.index)
+        loadEpg(p.channels[index])
+    }
+
     private fun loadEpg(ch: StreamLink) {
         epgJob?.cancel()
         val guide = ch.tvgUrl; val id = ch.tvgId
@@ -962,6 +1000,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 return true
             }
             is UiScreen.Catalog -> { _screen.value = discoveryScreen(); return true }
+            is UiScreen.EpgGuide -> { _screen.value = guidePlayer ?: discoveryScreen(); return true }
             is UiScreen.ApkInstall -> {
                 _screen.value = render(cur.server, currentPath, "", SortMode.DEFAULT)
                 return true
