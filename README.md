@@ -119,7 +119,7 @@ To load an IPTV channel list (or any `.m3u`/`.m3u8` playlist) onto the TV:
 4. Confirm the channel count — tap **Import all**
 5. Every channel appears on the TV's **🔗 Links** screen, individually selectable
 
-Or pick a `.m3u` file from your device using the file picker — it's read, parsed, and imported in one step. Up to 500 channels per import (oldest links evicted when the list is full). No outbound calls; no per-site rules — the server imports whatever URLs the playlist contains.
+Or pick a `.m3u` file from your device using the file picker — it's read, parsed, and imported in one step. A playlist of any size imports in full (no cap, no eviction). No per-site rules — the server imports whatever URLs the playlist contains.
 
 A playlist shows as a **single collapsible group** — on the phone's in-app card and on the TV's **🔗 Links** screen alike (not one row per channel). On the TV, press **MENU (☰)** on the group to save the whole playlist to the home screen for one-press access later, with no phone needed. Opening any channel plays it in the **in-app channel player**, where **↑/↓ flips** through the rest of that playlist and per-channel `#EXTVLCOPT` headers (User-Agent/Referer) and the `url-tvg` EPG guide are carried through automatically.
 
