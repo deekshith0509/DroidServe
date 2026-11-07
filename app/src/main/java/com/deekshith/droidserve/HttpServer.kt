@@ -483,6 +483,40 @@ class HttpServer(
             }
         }
 
+        // ── Remote control: TV reports now-playing + long-polls for channel commands; web UI drives it ──
+        if (path.startsWith("api/remote")) {
+            fun cookie(r: Response) = r.also {
+                if (needsCookie) it.addHeader("Set-Cookie", "$COOKIE_NAME=$sessionToken; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly")
+            }
+            when (path) {
+                "api/remote/set" -> {
+                    RemoteBus.setNowPlaying(
+                        params["label"]?.firstOrNull().orEmpty(),
+                        params["idx"]?.firstOrNull()?.toIntOrNull() ?: 0,
+                        params["total"]?.firstOrNull()?.toIntOrNull() ?: 0,
+                    )
+                    return cookie(jsonResponse("{\"ok\":true}"))
+                }
+                "api/remote/now" -> {
+                    ServerStateHolder.incrementRequests()
+                    return cookie(jsonResponse(RemoteBus.nowPlayingJson()))
+                }
+                "api/remote/cmd" -> {
+                    ServerStateHolder.incrementRequests()
+                    RemoteBus.postCommand(params["c"]?.firstOrNull().orEmpty())
+                    return cookie(jsonResponse("{\"ok\":true}"))
+                }
+                "api/remote/poll" -> {
+                    // Long-poll like links/poll — must NOT count as activity (would defeat auto-stop).
+                    val since = params["since"]?.firstOrNull()?.toIntOrNull() ?: -1
+                    val (v, c) = RemoteBus.awaitCommand(since, 25_000L)
+                    return if (v == since)
+                        newFixedLengthResponse(Response.Status.NO_CONTENT, "application/json", "").also { cors(it) }
+                    else cookie(jsonResponse("{\"version\":$v,\"cmd\":\"${ApiJson.escape(c)}\"}"))
+                }
+            }
+        }
+
         val isZip  = options.allowZip && params["zip"]?.firstOrNull() == "1"
         // Forced-download (?dl=1) is honoured only when downloads are enabled. With the option
         // off the server is preview/stream-only: the ⬇ button is hidden in the UI and a manual

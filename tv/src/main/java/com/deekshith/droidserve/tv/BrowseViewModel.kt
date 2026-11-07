@@ -297,6 +297,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private var zapJob: Job? = null
     private var catalogData: IptvCatalog.Data? = null   // cached iptv-org index, loaded once
     private var guidePlayer: UiScreen.ChannelPlayer? = null   // player to restore when leaving the TV guide
+    private var remoteJob: Job? = null   // phone-as-remote: poll the phone for channel commands
 
     init {
         GridDensity.intValue = prefs.getInt("density", 1)   // restore app-wide grid density
@@ -584,7 +585,41 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         playerReturn = _screen.value
         _screen.value = UiScreen.ChannelPlayer(channels, i, title = title)
         loadEpg(channels[i])
+        startRemoteLoop(); reportNowPlaying()
     }
+
+    // ── Phone-as-remote: report now-playing + apply channel commands from the phone web UI ──
+    private fun reportNowPlaying() {
+        val base = connectedBase ?: return
+        val s = _screen.value as? UiScreen.ChannelPlayer ?: return
+        val (u, p) = connectedCreds ?: ("" to null)
+        val label = s.current.label; val idx = s.index; val total = s.channels.size
+        viewModelScope.launch { withContext(Dispatchers.IO) { runCatching { DroidServeClient(base, u, p).reportNowPlaying(label, idx, total) } } }
+    }
+
+    private fun startRemoteLoop() {
+        remoteJob?.cancel()
+        val base = connectedBase ?: return   // only when connected to a phone
+        val (u, p) = connectedCreds ?: ("" to null)
+        remoteJob = viewModelScope.launch {
+            val c = DroidServeClient(base, u, p)
+            var since = -1
+            while (isActive) {
+                val res = try { withContext(Dispatchers.IO) { c.pollRemote(since) } }
+                catch (e: Exception) { kotlinx.coroutines.delay(3000); null }
+                if (res != null) {
+                    since = res.first
+                    if (_screen.value is UiScreen.ChannelPlayer) when (val cmd = res.second) {
+                        "up" -> channelPrev()
+                        "down" -> channelNext()
+                        else -> cmd.toIntOrNull()?.let { jumpToChannel(it - 1) }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun stopRemoteLoop() { remoteJob?.cancel(); remoteJob = null }
 
     /** Save the current player's channels to the TV Home (a named catalog bundle). */
     fun saveCurrentPlayerToHome() {
@@ -634,14 +669,14 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         val n = s.channels.size; if (n == 0) return
         val idx = ((s.index + delta) % n + n) % n   // wrap both directions
         _screen.value = s.copy(index = idx, numberInput = "", epg = null, prevIndex = s.index)
-        loadEpg(s.channels[idx])
+        loadEpg(s.channels[idx]); reportNowPlaying()
     }
 
     fun jumpToChannel(index: Int) {
         val s = _screen.value as? UiScreen.ChannelPlayer ?: return
         if (index !in s.channels.indices || index == s.index) { setChannelOverlay(false); return }
         _screen.value = s.copy(index = index, overlayOpen = false, numberInput = "", epg = null, prevIndex = s.index)
-        loadEpg(s.channels[index])
+        loadEpg(s.channels[index]); reportNowPlaying()
     }
 
     /** Remote "last channel" button — flip back to the previously-watched channel. */
@@ -696,7 +731,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         val p = guidePlayer ?: return
         if (index !in p.channels.indices) return
         _screen.value = p.copy(index = index, epg = null, overlayOpen = false, numberInput = "", prevIndex = p.index)
-        loadEpg(p.channels[index])
+        loadEpg(p.channels[index]); reportNowPlaying()
     }
 
     private fun loadEpg(ch: StreamLink) {
@@ -994,7 +1029,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
             is UiScreen.ChannelPlayer -> {
                 // Back closes the overlay first, then leaves the player for the screen we came from.
                 if (cur.overlayOpen) { _screen.value = cur.copy(overlayOpen = false); return true }
-                epgJob?.cancel(); zapJob?.cancel()
+                epgJob?.cancel(); zapJob?.cancel(); stopRemoteLoop()
                 _screen.value = playerReturn ?: discoveryScreen()
                 playerReturn = null
                 return true
@@ -1028,6 +1063,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         linksJob?.cancel()
         epgJob?.cancel()
         zapJob?.cancel()
+        remoteJob?.cancel()
         super.onCleared()
     }
 }
