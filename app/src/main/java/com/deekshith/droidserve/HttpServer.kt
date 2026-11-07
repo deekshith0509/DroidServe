@@ -423,6 +423,26 @@ class HttpServer(
                     val (v, list) = LinkStore.clear()
                     return cookie(jsonResponse(ApiJson.links(v, list)))
                 }
+                "api/links/refresh" -> {
+                    // Re-fetch a playlist URL and replace that group's channels, so dead/renamed
+                    // entries drop out instead of piling up. Group is derived the same way as import.
+                    ServerStateHolder.incrementRequests()
+                    val urlParam = params["url"]?.firstOrNull()?.trim()
+                        ?: return errJson(Response.Status.BAD_REQUEST, "Missing url param")
+                    if (!isAllowedLink(urlParam)) return errJson(Response.Status.BAD_REQUEST, "Invalid URL")
+                    val text = try {
+                        (java.net.URL(urlParam).openConnection() as java.net.HttpURLConnection).run {
+                            connectTimeout = 8_000; readTimeout = 12_000
+                            setRequestProperty("User-Agent", "Mozilla/5.0 DroidServe")
+                            inputStream.use { readCapped(it, options.importMaxBytes) }
+                        }
+                    } catch (_: Exception) { return errJson(Response.Status.INTERNAL_ERROR, "Could not fetch playlist") }
+                    val grp = LinkIngest.groupNameFor(urlParam)
+                    LinkStore.removeGroup(grp)
+                    val kept = PlaylistImport.parse(text, options.importMaxEntries).filter { isAllowedLink(it.url) }
+                    val (v, list) = LinkStore.addBatch(kept.map { LinkStore.NewLink(it.url, it.title, it.logo, it.tvgId, it.userAgent, it.referrer, it.tvgUrl) }, grp)
+                    return cookie(jsonResponse(ApiJson.links(v, list)))
+                }
                 "api/links/export.m3u" -> {
                     ServerStateHolder.incrementRequests()
                     val body = M3uExport.export(LinkStore.snapshot().second)

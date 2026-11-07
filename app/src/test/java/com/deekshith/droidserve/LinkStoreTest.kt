@@ -106,6 +106,16 @@ class LinkStoreTest {
         for (i in 20 downTo 1) assertTrue("New$i should be in list", list.any { it.label == "New$i" })
     }
 
+    @Test fun removeGroup_dropsOnlyThatGroup() {
+        LinkStore.clear()
+        LinkStore.addBatch((1..3).map { LinkStore.NewLink("http://a/$it.ts", "A$it") }, group = "GroupA")
+        LinkStore.addBatch((1..2).map { LinkStore.NewLink("http://b/$it.ts", "B$it") }, group = "GroupB")
+        val (v, list) = LinkStore.removeGroup("GroupA")
+        assertEquals(2, list.size)
+        assertTrue(list.all { it.group == "GroupB" })
+        assertTrue(v > 0)
+    }
+
     @Test fun labelFor_variants() {
         assertEquals("a.mp4", LinkStore.labelFor("http://host/path/a.mp4?x=1"))
         assertEquals("host.tv", LinkStore.labelFor("https://host.tv"))
