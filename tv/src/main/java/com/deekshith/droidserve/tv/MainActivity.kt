@@ -29,6 +29,7 @@ import com.deekshith.droidserve.tv.ui.screens.AuthScreen
 import com.deekshith.droidserve.tv.ui.screens.BrowseScreen
 import com.deekshith.droidserve.tv.ui.screens.ChannelPlayerScreen
 import com.deekshith.droidserve.tv.ui.screens.CrashScreen
+import com.deekshith.droidserve.tv.ui.screens.DiscoverScreen
 import com.deekshith.droidserve.tv.ui.screens.DiscoveryScreen
 import com.deekshith.droidserve.tv.ui.screens.LinkGroupScreen
 import com.deekshith.droidserve.tv.ui.screens.LinksScreen
@@ -79,7 +80,7 @@ class MainActivity : ComponentActivity() {
                     Box(Modifier.fillMaxSize().background(DsColor.Ink)) {
                         when (val s = screen) {
                             is UiScreen.PlaylistDetail -> SavedPlaylistScreen(s, vm::setPlaylistFilter, vm::onLinkClick, vm::removeSavedPlaylist, vm::saveChannelToHome, vm::removeSavedChannel, vm::isChannelSaved)
-                            is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual, vm::rescan, vm::setDiscoveryFilter, vm::openSavedPlaylist, vm::onLinkClick, vm::removeSavedPlaylist, vm::removeSavedChannel, vm::saveChannelToHome, vm::isChannelSaved, vm::toggleShowAll)
+                            is UiScreen.Discovery -> DiscoveryScreen(s, vm::connect, vm::connectManual, vm::rescan, vm::setDiscoveryFilter, vm::openSavedPlaylist, vm::onLinkClick, vm::removeSavedPlaylist, vm::removeSavedChannel, vm::saveChannelToHome, vm::isChannelSaved, vm::toggleShowAll, vm::openCatalog)
                             is UiScreen.Auth -> AuthScreen(s, vm::submitAuth, vm::forgetSaved)
                             is UiScreen.Browse -> BrowseScreen(s, vm::onEntryClick, vm::setFilter, vm::setSort, vm::clearCastToast, vm::toggleView, vm::openMusic, vm::openLinks, vm::cycleDensity) { vm.openFolder(s.server, s.path) }
                             is UiScreen.Viewer -> ViewerScreen(s)
@@ -89,7 +90,8 @@ class MainActivity : ComponentActivity() {
                             is UiScreen.AlbumSongs -> AlbumSongsScreen(s, vm::playSong)
                             is UiScreen.Links -> LinksScreen(s, vm::onLinkClick, vm::openLinkGroup, vm::saveLinkGroupToHome, vm::saveChannelToHome, vm::removeSavedPlaylist, vm::removeSavedChannel, vm::isGroupSaved, vm::isChannelSaved)
                             is UiScreen.LinkGroup -> LinkGroupScreen(s, vm::onLinkClick, vm::saveLinkGroupToHome, vm::saveChannelToHome, vm::removeSavedPlaylist, vm::removeSavedChannel, vm::isGroupSaved, vm::isChannelSaved)
-                            is UiScreen.ChannelPlayer -> ChannelPlayerScreen(s, vm::channelPrev, vm::channelNext, vm::jumpToChannel, vm::setChannelOverlay, vm::pushZapDigit, vm::openCurrentExternally, vm::previousChannel)
+                            is UiScreen.ChannelPlayer -> ChannelPlayerScreen(s, vm::channelPrev, vm::channelNext, vm::jumpToChannel, vm::setChannelOverlay, vm::pushZapDigit, vm::openCurrentExternally, vm::previousChannel, vm::saveCurrentPlayerToHome)
+                            is UiScreen.Catalog -> DiscoverScreen(s, vm::selectCatalogTab, vm::loadBundle)
                         }
                     }
                 }
