@@ -291,7 +291,7 @@ object FileUtils {
                 // player (VLC/MX/etc). data-path carries the encoded relative path.
                 if (isVideo || isAudio) {
                     val rawPath = if (urlPath.isEmpty()) eName else "${urlPath.trimEnd('/')}/$eName"
-                    sb.append("""<button class="btn-tv" data-path="""").append('"').append(escHtml(rawPath))
+                    sb.append("""<button class="btn-tv" data-path="""").append(escHtml(rawPath))
                     sb.append("""" title="Play on TV" aria-label="Play on TV">📺</button>""")
                 }
                 // Download button pinned to the right edge. Shown only when downloads are
