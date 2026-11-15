@@ -607,6 +607,8 @@ body.tv,body.tv *{cursor:none!important}
 .list.grid .info{padding:9px 11px;min-width:0}
 .list.grid .name{white-space:normal;max-height:2.6em;overflow:hidden}
 .list.grid .badge{position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.72);color:#fff;font-size:11px;padding:2px 6px;border-radius:5px;font-weight:700}
+.list.grid .item[data-play="v"] .thumb-wrap::after{content:"\25B6";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:30px;color:#fff;background:rgba(0,0,0,.30);text-shadow:0 2px 10px rgba(0,0,0,.85);pointer-events:none;opacity:.92;transition:opacity .12s,background .12s}
+.list.grid .item[data-play="v"]:hover .thumb-wrap::after{opacity:1;background:rgba(0,0,0,.12)}
 .list.grid .btn-zip,.list.grid .btn-dl,.list.grid .btn-tv{border-left:none;border-top:1px solid var(--bd);padding:8px}
 /* ── Image lightbox ───────────────────────────────────────────────────────── */
 .lb-ov{position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.94);display:none;align-items:center;justify-content:center}
