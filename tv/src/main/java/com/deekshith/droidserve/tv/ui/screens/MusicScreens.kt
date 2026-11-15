@@ -126,7 +126,8 @@ fun AlbumSongsScreen(state: UiScreen.AlbumSongs, onPlay: (MusicAlbum, Int) -> Un
             }
         }
         Spacer(Modifier.height(18.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize()) {
+        if (album.songs.isEmpty()) StateMessage(DsIcons.Audio, "No songs in this album")
+        else LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize()) {
             items(album.songs.size, key = { album.songs[it].name + it }) { i ->
                 val s = album.songs[i]
                 val mod = if (i == 0) Modifier.focusRequester(firstFocus) else Modifier

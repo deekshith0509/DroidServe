@@ -63,7 +63,7 @@ it automatically.
 | **Zero-typing discovery** | The phone advertises `_droidserve._tcp` over mDNS/NSD; the TV lists every phone running DroidServe on the LAN |
 | **Works when mDNS is blocked** | Many routers block multicast between clients — the TV also does a **single, polite subnet probe** on launch (with an on-screen **🔄 Rescan**) so reachable servers still appear (protected servers included) |
 | **Pick, don't guess** | Multiple phones can run servers at once; the TV shows the full list and you choose (no auto-select) |
-| **Full D-pad navigation** | Arrow keys move between rows, OK opens folders/files, Back walks up — the file list gets focus by default; search and manual-IP entry are opt-in so text fields never trap the remote |
+| **Full D-pad navigation** | Arrow keys move between rows, OK opens folders/files, Back walks up — the file list gets focus by default; search and manual-IP entry are opt-in so text fields never trap the remote. **↓ from any search box enters the list**, the channel player's **← jumps back to search** from anywhere in a long list, and **Back returns to the item you opened** (not the top of the folder) — and never exits the app mid-view |
 | **Compact, adaptive browser** | List view by default (best for arbitrary files); an optional landscape **poster grid** with adjustable column density (**Cozy / Compact / Dense**) and video-frame / image thumbnails from the server's cached `/thumb` service. A focus-driven blurred backdrop previews the highlighted item, and folder stats sit in the always-visible header |
 | **Install APKs** | Tap an `.apk` served by the phone → it downloads locally and opens the **system installer** (grant DroidServe "install unknown apps" once). No ADB, no root — the standard sideload flow, in-app |
 | **In-app viewers** | Text (incl. `.srt`/`.log`/config), images, and audio open **inside the app** — no dependence on an external viewer that may be missing or broken on old TVs |
@@ -75,7 +75,7 @@ it automatically.
 | **Streaming links (🔗)** | A **Links** screen shows URLs pushed from the phone in real time (long-poll); pick one with the remote to open — direct streams open in the in-app channel player, unresolved web pages open in a browser so nothing dead-ends |
 | **Live IPTV channel player** | A playable channel opens **in-app** (Media3/ExoPlayer; HLS + DASH): **D-pad ↑/↓ flips channels** instantly over a single long-lived player (no app-switch, flat RAM), **OK** opens a logo'd channel-list overlay, **digits** zap to a channel number, and per-channel `#EXTVLCOPT` **User-Agent/Referer** are set on the stream so header-gated IPTV plays instead of 403-ing. An optional **now/next EPG** bar appears when the playlist carries a `url-tvg` guide. **MENU (☰)** hands the channel to an external player for codecs ExoPlayer can't do |
 | **Discover catalog** | A built-in **Discover** screen (no setup, no phone): a **Featured** tab led by an **offline built-in Hyderabad-Telugu bundle** shipped in the app, plus **Languages / Countries / Categories** tabs of free [iptv-org](https://iptv-org.github.io/) bundles. Pick one → it fetches + parses on the TV and plays. In the player, **MENU → TV guide** shows now/next across the list and **Save to Home** keeps a bundle |
-| **Player extras** | Audio & subtitle **track picker** (language-labelled, for multi-audio feeds), **auto-reconnect** on stream drop, **aspect/zoom** toggle, **sleep timer**, **last-channel** flip (→), and **phone-as-remote** — the web Links tab shows "📺 On TV: …" with Prev/Next that drive the player live |
+| **Player extras** | Audio & subtitle **track picker** (language-labelled, for multi-audio feeds), **smart reconnect** on stream drop (bounded retries with a visible *Reconnecting (n/3)* state; dead / geo-blocked / 404 channels fail fast with a clear message instead of looping), **keeps the screen awake** while playing, **aspect/zoom** toggle, **sleep timer**, **last-channel** flip (→), and **phone-as-remote** — the web Links tab shows "📺 On TV: …" with Prev/Next that drive the player live |
 | **Save to the home screen** | Press the remote's **MENU (☰)** button on any link or playlist in **Links** to save it to the TV's home screen — a playlist saves as a folder, a single link as a tile. Saved items play directly over the internet with **no phone connected**, and appear below the device list on the main screen |
 | **Search (incl. inside playlists)** | The main screen and playlist views search link and playlist names — and search **recursively inside saved playlists**, so a single channel buried in an 87-item playlist is findable from the home screen |
 | **Music library (🎵)** | A searchable, folder-grouped albums grid with in-app playback (native `MediaPlayer`, folder playlist, live position) |
@@ -236,7 +236,13 @@ tv/src/main/java/com/deekshith/droidserve/tv/    # Android TV companion
 ├── SubnetScanner.kt         # Polite subnet-probe fallback when mDNS is blocked
 ├── CredentialStore.kt       # Per-server remembered passwords
 ├── PlaybackStore.kt         # Video resume positions (100 KB self-pruning cache)
+├── SavedStore.kt            # Home-screen saved playlists/links (atomic JSON persistence)
+├── ThumbLoader.kt           # Bounded LRU thumbnail cache + downsampled decode (Canvas-safe)
+├── Epg.kt                   # Dependency-free XMLTV now/next guide (pure, JVM-tested)
+├── IptvCatalog.kt           # In-app iptv-org Discover catalog + offline built-in bundle
+├── TvPlaylist.kt            # Pure EXTM3U parser for the TV (JVM-tested)
 ├── Models.kt                # DiscoveredServer / RemoteEntry / ServerInfo / CastCommand / StreamLink
+├── ui/                      # Shared components (DsScreen/TopBar/ContextMenu/Thumb/…) + screens/
 └── App.kt                   # Global crash-to-file handler
 ```
 

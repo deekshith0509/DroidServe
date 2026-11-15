@@ -39,9 +39,11 @@ object Epg {
     private const val MAX_BYTES = 16 * 1024 * 1024   // cap a guide download; XMLTV dumps can be huge
     private const val MAX_PROGRAMMES = 40_000         // bound memory on a low-RAM TV
 
-    // Parsed-and-filtered programmes per guide URL. A null value marks a URL we already failed on,
-    // so a broken guide is never refetched while flipping channels.
-    private val cache = HashMap<String, List<Programme>?>()
+    // Parsed-and-filtered programmes per (guide URL + channel set), with the wall-clock time fetched.
+    // A null value marks a URL we already failed on (not refetched while flipping channels); any entry
+    // is re-fetched after CACHE_TTL_MS so a long-running session eventually picks up a newer guide.
+    private const val CACHE_TTL_MS = 4 * 60 * 60 * 1000L
+    private val cache = HashMap<String, Pair<Long, List<Programme>?>>()
     private val lock = Mutex()
 
     /** now/next for [channelId] from [guideUrl], restricted to [wantedIds]. Null on any failure. */
@@ -55,14 +57,15 @@ object Epg {
         // Key by URL *and* the wanted set: two playlists can share one guide URL but filter to
         // different channels, so caching under the bare URL starves whichever opens second of its EPG.
         val key = guideUrl + "#" + wantedIds.sorted().hashCode()
-        lock.withLock { if (cache.containsKey(key)) return cache[key] }
+        val now = System.currentTimeMillis()
+        lock.withLock { cache[key]?.let { (at, v) -> if (now - at < CACHE_TTL_MS) return v } }
         val parsed = withContext(Dispatchers.IO) {
             runCatching {
                 val text = fetch(guideUrl)
                 parse(text, wantedIds, MAX_PROGRAMMES)
             }.getOrNull()
         }
-        lock.withLock { cache[key] = parsed }
+        lock.withLock { cache[key] = now to parsed }
         return parsed
     }
 
