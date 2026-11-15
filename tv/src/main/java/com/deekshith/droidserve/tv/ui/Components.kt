@@ -28,7 +28,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -408,9 +410,11 @@ fun ContextMenu(title: String, actions: List<ContextAction>, onDismiss: () -> Un
     ) {
         Column(
             Modifier.widthIn(min = 360.dp, max = 520.dp)
+                .heightIn(max = 560.dp)
                 .clip(RoundedCornerShape(DsDim.RadiusCard))
                 .background(DsColor.Ink2)
                 .border(1.dp, DsColor.Line, RoundedCornerShape(DsDim.RadiusCard))
+                .verticalScroll(rememberScrollState())
                 .padding(22.dp),
         ) {
             Text(title, style = DsType.Section, maxLines = 2, overflow = TextOverflow.Ellipsis)

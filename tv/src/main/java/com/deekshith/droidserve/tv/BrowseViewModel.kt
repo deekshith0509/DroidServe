@@ -299,6 +299,9 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private var catalogData: IptvCatalog.Data? = null   // cached iptv-org index, loaded once
     private var guidePlayer: UiScreen.ChannelPlayer? = null   // player to restore when leaving the TV guide
     private var remoteJob: Job? = null   // phone-as-remote: poll the phone for channel commands
+    private var reportJob: Job? = null   // single-flight now-playing POST (dropped on rapid channel flips)
+    private var apkJob: Job? = null      // in-flight APK download (cancel on Back so the installer can't fire late)
+    private var browseJob: Job? = null   // in-flight folder load (cancel on Back / new open so paths can't race)
 
     init {
         GridDensity.intValue = prefs.getInt("density", 1)   // restore app-wide grid density
@@ -434,7 +437,8 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openFolder(server: DiscoveredServer, path: String) {
         _screen.value = UiScreen.Browse(server, path, emptyList(), 0, 0, 0, 0, loading = true)
-        viewModelScope.launch {
+        browseJob?.cancel()
+        browseJob = viewModelScope.launch {
             try {
                 val listing = withContext(Dispatchers.IO) {
                     // Reuse the authenticated client from connect()/submitAuth(). The fallback
@@ -595,7 +599,8 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         val s = _screen.value as? UiScreen.ChannelPlayer ?: return
         val (u, p) = connectedCreds ?: ("" to null)
         val label = s.current.label; val idx = s.index; val total = s.channels.size
-        viewModelScope.launch { withContext(Dispatchers.IO) { runCatching { DroidServeClient(base, u, p).reportNowPlaying(label, idx, total) } } }
+        reportJob?.cancel()
+        reportJob = viewModelScope.launch { withContext(Dispatchers.IO) { runCatching { DroidServeClient(base, u, p).reportNowPlaying(label, idx, total) } } }
     }
 
     private fun startRemoteLoop() {
@@ -877,7 +882,8 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     // then emit an install event the Activity turns into a FileProvider ACTION_VIEW install intent.
     private fun downloadAndInstallApk(server: DiscoveredServer, entry: RemoteEntry) {
         _screen.value = UiScreen.ApkInstall(server, entry.name, ApkPhase.DOWNLOADING, 0)
-        viewModelScope.launch {
+        apkJob?.cancel()
+        apkJob = viewModelScope.launch {
             try {
                 val dir = java.io.File(getApplication<Application>().cacheDir, "apk")
                 val dest = java.io.File(dir, entry.name.replace(Regex("[^A-Za-z0-9._-]"), "_"))
@@ -895,9 +901,11 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 lastApkFile = dest
                 (_screen.value as? UiScreen.ApkInstall)?.let {
-                    if (it.name == entry.name) _screen.value = it.copy(phase = ApkPhase.READY, progress = 100)
+                    if (it.name == entry.name) {
+                        _screen.value = it.copy(phase = ApkPhase.READY, progress = 100)
+                        _install.tryEmit(dest)   // only auto-open the installer if the user didn't Back out mid-download
+                    }
                 }
-                _install.tryEmit(dest)
             } catch (e: Exception) {
                 (_screen.value as? UiScreen.ApkInstall)?.let {
                     if (it.name == entry.name) _screen.value = it.copy(phase = ApkPhase.FAILED, error = e.message ?: "Download failed")
@@ -1057,6 +1065,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
             is UiScreen.Catalog -> { _screen.value = discoveryScreen(); return true }
             is UiScreen.EpgGuide -> { _screen.value = guidePlayer ?: discoveryScreen(); return true }
             is UiScreen.ApkInstall -> {
+                apkJob?.cancel()
                 _screen.value = render(cur.server, currentPath, "", SortMode.DEFAULT)
                 return true
             }
@@ -1070,7 +1079,16 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 openFolder(cur.server, cur.path.substringBeforeLast('/', ""))
                 return true
             }
-            is UiScreen.Discovery -> return false
+            is UiScreen.Discovery -> {
+                // "All" / an open filter are in-place views, not pushed screens — Back undoes them,
+                // and only the clean home view falls through to exit the app.
+                if (cur.showAll || cur.filter.isNotEmpty()) {
+                    if (cur.showAll) { showAll = false; prefs.edit().putBoolean("showall", false).apply() }
+                    _screen.value = cur.copy(showAll = false, filter = "")
+                    return true
+                }
+                return false
+            }
         }
     }
 
@@ -1084,6 +1102,9 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         epgJob?.cancel()
         zapJob?.cancel()
         remoteJob?.cancel()
+        reportJob?.cancel()
+        apkJob?.cancel()
+        browseJob?.cancel()
         super.onCleared()
     }
 }

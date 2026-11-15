@@ -31,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.style.TextOverflow
@@ -119,6 +120,7 @@ fun DiscoveryScreen(
     val serversPresent = state.servers.isNotEmpty() && !state.connecting
     val focusFirstPlaylist = !serversPresent && playlists.isNotEmpty()
     val focusFirstChannel = !serversPresent && playlists.isEmpty() && channels.isNotEmpty()
+    val emptyLanding = !serversPresent && playlists.isEmpty() && channels.isEmpty()
 
     Box(
         Modifier.fillMaxSize().background(DsColor.Ink).onMenuKey(enabled = !menuOpen && hasSaved) {
@@ -150,7 +152,7 @@ fun DiscoveryScreen(
                     state.error?.let { Spacer(Modifier.height(10.dp)); Text(it, style = DsType.Body.copy(color = DsColor.Coral)) }
                     if (searchOpen) {
                         Spacer(Modifier.height(12.dp))
-                        DsTextField(state.filter, onFilter, "Search saved links & playlists…", Modifier.width(380.dp).focusRequester(searchFocus))
+                        DsTextField(state.filter, onFilter, "Search saved links & playlists…", Modifier.width(380.dp).focusRequester(searchFocus).focusProperties { down = firstFocus })
                         LaunchedEffect(Unit) { runCatching { searchFocus.requestFocus() } }
                     }
                     Spacer(Modifier.height(20.dp))
@@ -185,7 +187,7 @@ fun DiscoveryScreen(
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    NavChip(if (state.scanning) "Scanning…" else "Rescan", DsIcons.Refresh, active = false) { if (!state.scanning) onRescan() }
+                    NavChip(if (state.scanning) "Scanning…" else "Rescan", DsIcons.Refresh, active = false, modifier = if (emptyLanding) Modifier.focusRequester(firstFocus) else Modifier) { if (!state.scanning) onRescan() }
                     ManualConnect(onManual)
                 }
             }
@@ -245,7 +247,7 @@ fun DiscoveryScreen(
     }
     InitialFocus(
         firstFocus,
-        enabled = !searchOpen && !state.connecting && (serversPresent || playlists.isNotEmpty() || channels.isNotEmpty()),
+        enabled = !searchOpen && !state.connecting && (serversPresent || playlists.isNotEmpty() || channels.isNotEmpty() || emptyLanding),
         state.servers.size, state.connecting, searchOpen, playlists.size, channels.size,
     )
 }

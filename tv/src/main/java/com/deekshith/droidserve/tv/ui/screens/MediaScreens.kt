@@ -1,6 +1,7 @@
 package com.deekshith.droidserve.tv.ui.screens
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,10 +29,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.deekshith.droidserve.tv.ApkPhase
 import com.deekshith.droidserve.tv.UiScreen
 import com.deekshith.droidserve.tv.ViewerKind
@@ -39,13 +45,14 @@ import com.deekshith.droidserve.tv.ui.DsColor
 import com.deekshith.droidserve.tv.ui.DsIcon
 import com.deekshith.droidserve.tv.ui.DsIcons
 import com.deekshith.droidserve.tv.ui.DsLoading
+import com.deekshith.droidserve.tv.ui.InitialFocus
 import com.deekshith.droidserve.tv.ui.DsType
 import com.deekshith.droidserve.tv.ui.NavChip
 import com.deekshith.droidserve.tv.ui.PrimaryButton
 import com.deekshith.droidserve.tv.ui.StateMessage
 import com.deekshith.droidserve.tv.ui.Thumb
 import com.deekshith.droidserve.tv.ui.fmtTime
-import com.deekshith.droidserve.tv.ui.sampleSize
+import com.deekshith.droidserve.tv.sampleSize
 import kotlinx.coroutines.withContext
 
 @Composable
@@ -61,10 +68,15 @@ fun ViewerScreen(state: UiScreen.Viewer) {
         when {
             state.loading -> DsLoading("Loading…")
             state.error != null -> StateMessage(DsIcons.Warning, "Couldn't open this file", state.error, iconTint = DsColor.Coral)
-            state.kind == ViewerKind.TEXT -> Box(
-                Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)).background(DsColor.Ink2).padding(20.dp),
-            ) {
-                Text(state.text ?: "", style = DsType.Mono, modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()))
+            state.kind == ViewerKind.TEXT -> {
+                val scrollFocus = remember { FocusRequester() }
+                Box(
+                    Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)).background(DsColor.Ink2).padding(20.dp)
+                        .verticalScroll(rememberScrollState()).focusRequester(scrollFocus).focusable(),
+                ) {
+                    Text(state.text ?: "", style = DsType.Mono)
+                }
+                InitialFocus(scrollFocus, enabled = true, state.text)
             }
             state.kind == ViewerKind.IMAGE && state.imageUrl != null -> RemoteImage(state.imageUrl)
         }
@@ -109,6 +121,8 @@ fun AudioPlayerScreen(
     onCompleted: () -> Unit,
 ) {
     val track = state.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val playFocus = remember { FocusRequester() }
     var playing by remember { mutableStateOf(true) }
     var positionMs by remember(track.url) { mutableStateOf(0) }
     var durationMs by remember(track.url) { mutableStateOf(0) }
@@ -129,6 +143,13 @@ fun AudioPlayerScreen(
         onDispose { runCatching { player.reset() } }
     }
     DisposableEffect(Unit) { onDispose { runCatching { player.release() } } }
+    DisposableEffect(lifecycleOwner) {
+        val obs = LifecycleEventObserver { _, e ->
+            if (e == Lifecycle.Event.ON_STOP) runCatching { if (player.isPlaying) { player.pause(); playing = false } }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
     LaunchedEffect(track.url, playing) {
         while (playing && !failed) {
             positionMs = runCatching { player.currentPosition }.getOrDefault(positionMs)
@@ -159,7 +180,7 @@ fun AudioPlayerScreen(
             Spacer(Modifier.height(26.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 NavChip("Prev", DsIcons.Prev, active = false) { if (state.hasPrev) onPrev() }
-                PrimaryButton(if (playing) "Pause" else "Play", icon = if (playing) DsIcons.Pause else DsIcons.Play) {
+                PrimaryButton(if (playing) "Pause" else "Play", Modifier.focusRequester(playFocus), icon = if (playing) DsIcons.Pause else DsIcons.Play) {
                     if (playing) { runCatching { player.pause() }; playing = false }
                     else { runCatching { player.start() }; playing = true }
                 }
@@ -169,10 +190,12 @@ fun AudioPlayerScreen(
         Spacer(Modifier.height(20.dp))
         HintBack()
     }
+    InitialFocus(playFocus, enabled = !failed, track.url)
 }
 
 @Composable
 fun ApkInstallScreen(state: UiScreen.ApkInstall, onInstall: () -> Unit) {
+    val installFocus = remember { FocusRequester() }
     Column(
         Modifier.fillMaxSize().background(DsColor.Ink).padding(48.dp),
         verticalArrangement = Arrangement.Center,
@@ -195,7 +218,7 @@ fun ApkInstallScreen(state: UiScreen.ApkInstall, onInstall: () -> Unit) {
             ApkPhase.READY -> {
                 Text("Opening the installer — confirm on screen.", style = DsType.Meta)
                 Spacer(Modifier.height(18.dp))
-                PrimaryButton("Install", icon = DsIcons.Apk) { onInstall() }
+                PrimaryButton("Install", Modifier.focusRequester(installFocus), icon = DsIcons.Apk) { onInstall() }
                 Spacer(Modifier.height(12.dp))
                 Text("If it warns about 'unknown apps', allow DroidServe, then press Install.", style = DsType.Caption)
             }
@@ -204,6 +227,7 @@ fun ApkInstallScreen(state: UiScreen.ApkInstall, onInstall: () -> Unit) {
         Spacer(Modifier.height(20.dp))
         HintBack()
     }
+    InitialFocus(installFocus, enabled = state.phase == ApkPhase.READY, state.phase)
 }
 
 @Composable

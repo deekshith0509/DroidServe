@@ -1,7 +1,9 @@
 package com.deekshith.droidserve.tv
 
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -48,7 +50,7 @@ class DroidServeClient(
         val arr = o.optJSONArray("entries")
         val list = ArrayList<RemoteEntry>(arr?.length() ?: 0)
         if (arr != null) for (i in 0 until arr.length()) {
-            val e = arr.getJSONObject(i)
+            val e = arr.optJSONObject(i) ?: continue
             list.add(
                 RemoteEntry(
                     name = e.optString("name"),
@@ -71,11 +73,11 @@ class DroidServeClient(
         val arr = o.optJSONArray("albums") ?: return emptyList()
         val out = ArrayList<MusicAlbum>(arr.length())
         for (i in 0 until arr.length()) {
-            val a = arr.getJSONObject(i)
+            val a = arr.optJSONObject(i) ?: continue
             val sArr = a.optJSONArray("songs")
             val songs = ArrayList<RemoteEntry>(sArr?.length() ?: 0)
             if (sArr != null) for (j in 0 until sArr.length()) {
-                val s = sArr.getJSONObject(j)
+                val s = sArr.optJSONObject(j) ?: continue
                 songs.add(
                     RemoteEntry(
                         name = s.optString("name"), isDir = false, size = 0, modified = 0,
@@ -164,7 +166,7 @@ class DroidServeClient(
         val arr = o.optJSONArray("links") ?: return emptyList()
         val out = ArrayList<StreamLink>(arr.length())
         for (i in 0 until arr.length()) {
-            val l = arr.getJSONObject(i)
+            val l = arr.optJSONObject(i) ?: continue
             fun s(k: String) = l.optString(k, "").takeIf { it.isNotEmpty() }
             out.add(StreamLink(l.optString("id"), l.optString("url"), l.optString("label"), l.optLong("addedAt"), l.optBoolean("playable", true),
                 s("group"), s("logo"), s("tvgId"), s("userAgent"), s("referrer"), s("tvgUrl")))
@@ -178,8 +180,7 @@ class DroidServeClient(
             val code = conn.responseCode
             if (code == 401) throw AuthException()
             if (code !in 200..299) throw RuntimeException("HTTP $code for $url")
-            val text = conn.inputStream.bufferedReader().use { it.readText() }
-            return JSONObject(text)
+            return JSONObject(conn.inputStream.use { it.readCapped(MAX_JSON_BYTES) })
         } finally {
             conn.disconnect()
         }
@@ -251,6 +252,27 @@ class DroidServeClient(
 
 /** Thrown when the server rejects credentials (HTTP 401). */
 class AuthException : RuntimeException("Authentication required")
+
+// Cap on a JSON API body. shortcut: a library/index larger than this degrades to empty rather than
+// loading; raise the cap or switch to a streaming parser if real libraries ever approach it.
+private const val MAX_JSON_BYTES = 16 * 1024 * 1024
+
+/**
+ * Read up to [maxBytes] of this stream as UTF-8, growing the buffer instead of pre-allocating the
+ * cap — a bounded read that never allocates more than the response needs (matters on low-RAM TVs).
+ */
+internal fun InputStream.readCapped(maxBytes: Int): String {
+    val out = ByteArrayOutputStream(minOf(maxBytes, 64 * 1024))
+    val chunk = ByteArray(64 * 1024)
+    var total = 0
+    while (total < maxBytes) {
+        val n = read(chunk, 0, minOf(chunk.size, maxBytes - total))
+        if (n < 0) break
+        out.write(chunk, 0, n)
+        total += n
+    }
+    return out.toString("UTF-8")
+}
 
 // RFC 3986 percent-encoding of a single path segment. Self-contained (no android.net.Uri) so it
 // behaves identically on the JVM unit-test classpath and matches the phone's FileUtils.encodeSeg.
