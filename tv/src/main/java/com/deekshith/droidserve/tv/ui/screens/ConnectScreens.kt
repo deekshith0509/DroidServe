@@ -234,10 +234,10 @@ fun DiscoveryScreen(
         if (menuOpen) {
             val title = focusedPlaylist ?: focusedChannel?.link?.label ?: ""
             val actions = buildList {
-                focusedPlaylist?.let { n -> add(ContextAction("Remove from saved", DsIcons.Warning, destructive = true) { onRemovePlaylist(n) }) }
+                focusedPlaylist?.let { n -> add(ContextAction("Remove from saved", DsIcons.Warning, destructive = true) { onRemovePlaylist(n); focusedPlaylist = null }) }
                 focusedChannel?.let { hit ->
                     val l = hit.link
-                    if (isChannelSaved(l.id)) add(ContextAction("Remove link from Home", DsIcons.Warning, destructive = true) { onRemoveChannel(l.id) })
+                    if (isChannelSaved(l.id)) add(ContextAction("Remove link from Home", DsIcons.Warning, destructive = true) { onRemoveChannel(l.id); focusedChannel = null })
                     else add(ContextAction("Save link to Home", DsIcons.Link) { onSaveChannel(l) })
                     hit.from?.let { fromName -> state.savedPlaylists.firstOrNull { it.name == fromName }?.let { p -> add(ContextAction("Open $fromName", DsIcons.ListView) { onOpenPlaylist(p) }) } }
                 }

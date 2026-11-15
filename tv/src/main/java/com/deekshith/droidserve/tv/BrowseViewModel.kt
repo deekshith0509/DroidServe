@@ -107,7 +107,8 @@ sealed interface UiScreen {
         val loading: Boolean = false,
         val error: String? = null,
         val casting: OpenRequest? = null,  // transient toast when a phone casts to us
-        val gridMode: Boolean = true       // poster grid vs list in the browse screen
+        val gridMode: Boolean = true,      // poster grid vs list in the browse screen
+        val focusIndex: Int = 0            // item to focus on (re)entry — the one last opened in this folder
     ) : UiScreen
 
     /**
@@ -281,6 +282,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private var client: DroidServeClient? = null
     private var rawEntries: List<RemoteEntry> = emptyList()
     private var currentPath: String = ""     // last opened folder, so the viewer can return to it
+    private val folderFocus = HashMap<String, String>()  // path → name of the entry last opened there, to restore focus on Back
     private var pollJob: Job? = null
     private var linksJob: Job? = null
     private var streamLinks: List<StreamLink> = emptyList()
@@ -481,6 +483,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
             SortMode.NAME -> shown.sortedWith(compareBy({ if (it.isDir) 0 else 1 }, { it.name.lowercase() }))
             SortMode.SIZE -> shown.sortedWith(compareBy({ if (it.isDir) 0 else 1 }, { -it.size }))
         }
+        val focusName = folderFocus[path]
         return UiScreen.Browse(
             server = server, path = path, entries = shown,
             total = rawEntries.size,
@@ -488,7 +491,8 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
             dirCount = rawEntries.count { it.isDir },
             totalBytes = rawEntries.filter { !it.isDir }.sumOf { it.size },
             filter = filter, sort = sort,
-            gridMode = gridMode
+            gridMode = gridMode,
+            focusIndex = focusName?.let { n -> shown.indexOfFirst { it.name == n } }?.coerceAtLeast(0) ?: 0,
         )
     }
 
@@ -765,9 +769,19 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         if (guide.isNullOrBlank() || id.isNullOrBlank()) return
         val wanted = (_screen.value as? UiScreen.ChannelPlayer)?.channels?.mapNotNull { it.tvgId }?.toSet() ?: emptySet()
         epgJob = viewModelScope.launch {
-            val nn = runCatching { Epg.nowNextFor(guide, id, wanted) }.getOrNull()
-            val s = _screen.value as? UiScreen.ChannelPlayer ?: return@launch
-            if (s.current.id == ch.id) _screen.value = s.copy(epg = nn)
+            // Refresh now/next while this channel stays open, so the info bar rolls over to the next
+            // programme instead of freezing on whatever was airing when we tuned in. The guide is
+            // parsed once and cached, so each re-query is cheap (no refetch).
+            while (isActive) {
+                val nn = runCatching { Epg.nowNextFor(guide, id, wanted) }.getOrNull()
+                val s = _screen.value as? UiScreen.ChannelPlayer ?: break
+                if (s.current.id != ch.id) break
+                if (s.epg != nn) _screen.value = s.copy(epg = nn)
+                // Wake when the current programme ends (+2s slack); floored to 30s, capped at 10min.
+                val now = System.currentTimeMillis()
+                val until = nn?.nowStopMs?.takeIf { it > now }?.minus(now)?.plus(2_000) ?: 600_000L
+                kotlinx.coroutines.delay(until.coerceIn(30_000L, 600_000L))
+            }
         }
     }
 
@@ -832,6 +846,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun onEntryClick(entry: RemoteEntry) {
         val cur = _screen.value as? UiScreen.Browse ?: return
+        folderFocus[cur.path] = entry.name   // remember what we opened, to restore focus when Back returns here
         when {
             entry.isDir -> {
                 val childPath = if (cur.path.isEmpty()) entry.name else "${cur.path}/${entry.name}"

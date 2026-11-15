@@ -83,7 +83,7 @@ fun BrowseScreen(
     var searchOpen by remember(state.path) { mutableStateOf(false) }
     val searchFocus = remember { FocusRequester() }
     // The focused item drives the backdrop + hero info; defaults to the first entry on load.
-    var focused by remember(state.path, state.entries) { mutableStateOf(state.entries.firstOrNull()) }
+    var focused by remember(state.path, state.entries) { mutableStateOf(state.entries.getOrNull(state.focusIndex)) }
     val backdropUrl = focused?.takeIf { it.isThumbnailable }?.thumbUrl
 
     BoxWithConstraints(Modifier.fillMaxSize().background(DsColor.Ink)) {
@@ -131,6 +131,7 @@ fun BrowseScreen(
                 )
                 state.gridMode -> {
                     val gridState = rememberLazyGridState()
+                    LaunchedEffect(state.path, state.focusIndex, state.entries.size) { runCatching { gridState.scrollToItem(state.focusIndex) } }
                     Box(Modifier.fillMaxSize()) {
                     LazyVerticalGrid(
                     state = gridState,
@@ -144,7 +145,7 @@ fun BrowseScreen(
                         val e = state.entries[i]
                         val mod = Modifier
                             .onFocusChanged { if (it.hasFocus) focused = e }
-                            .then(if (i == 0) Modifier.focusRequester(firstItemFocus) else Modifier)
+                            .then(if (i == state.focusIndex) Modifier.focusRequester(firstItemFocus) else Modifier)
                         MediaTile(
                             title = e.name,
                             subtitle = metaFor(e),
@@ -160,6 +161,7 @@ fun BrowseScreen(
                 }
                 else -> {
                     val listState = rememberLazyListState()
+                    LaunchedEffect(state.path, state.focusIndex, state.entries.size) { runCatching { listState.scrollToItem(state.focusIndex) } }
                     Box(Modifier.fillMaxSize()) {
                     LazyColumn(
                     state = listState,
@@ -171,7 +173,7 @@ fun BrowseScreen(
                         val e = state.entries[i]
                         val mod = Modifier
                             .onFocusChanged { if (it.hasFocus) focused = e }
-                            .then(if (i == 0) Modifier.focusRequester(firstItemFocus) else Modifier)
+                            .then(if (i == state.focusIndex) Modifier.focusRequester(firstItemFocus) else Modifier)
                         EntryRow(e, mod) { onClick(e) }
                     }
                 }
@@ -181,7 +183,7 @@ fun BrowseScreen(
             }
         }
     }
-    InitialFocus(firstItemFocus, enabled = !searchOpen && state.entries.isNotEmpty(), state.path, state.entries.size, searchOpen)
+    InitialFocus(firstItemFocus, enabled = !searchOpen && state.entries.isNotEmpty(), state.path, state.entries.size, searchOpen, state.focusIndex)
 }
 
 @Composable
