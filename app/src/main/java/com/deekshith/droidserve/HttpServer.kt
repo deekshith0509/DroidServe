@@ -1067,7 +1067,7 @@ class HttpServer(
         val body = "#EXTM3U\r\n#EXTINF:-1,$title\r\n$absUrl\r\n"
         // audio/x-mpegurl is the most widely-recognised M3U MIME across OSes/players.
         return newFixedLengthResponse(Response.Status.OK, "audio/x-mpegurl", body).also {
-            it.addHeader("Content-Disposition", contentDisposition("${playlistBaseName(entry.name)}.m3u", inline = false))
+            it.addHeader("Content-Disposition", contentDisposition("${playlistBaseName(entry.name)}.m3u", inline = true))
             it.addHeader("Cache-Control", "no-store")
             cors(it)
         }

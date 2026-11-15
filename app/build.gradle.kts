@@ -22,8 +22,8 @@ android {
         applicationId = "com.deekshith.droidserve"
         minSdk = 24
         targetSdk = 35
-        versionCode = 22
-        versionName = "1.12.0"
+        versionCode = 23
+        versionName = "1.12.1"
     }
 
     signingConfigs {
