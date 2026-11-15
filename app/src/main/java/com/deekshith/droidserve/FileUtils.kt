@@ -96,6 +96,17 @@ object FileUtils {
         return m.startsWith("image/") || m.startsWith("video/")
     }
 
+    // Formats mainstream desktop browsers decode natively in <video>/<audio>. Everything else
+    // (mkv/avi/mov/ts/mka/…) is handed to the OS's native player instead of attempted in-page:
+    // canPlayType lies ("maybe") for several containers, producing silent black/no-audio playback.
+    private val INLINE_MEDIA_MIMES = hashSetOf(
+        "video/mp4", "video/webm", "video/ogg", "video/x-m4v",
+        "audio/mpeg", "audio/ogg", "audio/wav", "audio/flac",
+        "audio/aac", "audio/mp4", "audio/opus", "audio/webm"
+    )
+
+    fun isBrowserPlayable(name: String): Boolean = getMimeType(name) in INLINE_MEDIA_MIMES
+
     // Cached-thumbnail URL for a decoded relative path. [tokAmp] is "&tok=…" (or "" when auth off).
     // Each path segment is percent-encoded so names with spaces/&/unicode stay valid in the URL.
     fun thumbUrlFor(relPath: String, w: Int, tokAmp: String): String {
@@ -276,8 +287,11 @@ object FileUtils {
                     val rel = if (urlPath.isEmpty()) eName else "${urlPath.trimEnd('/')}/$eName"
                     """ data-thumb="${escHtml(thumbUrlFor(rel, 320, tokAmp))}""""
                 } else ""
+                // Web-native media gets data-inline so the player plays it in-page; everything
+                // else (mkv/avi/mov/…) is routed straight to the OS's native player.
+                val inlineAttr = if (isBrowserPlayable(eName)) """ data-inline="1"""" else ""
                 // Every file carries its mime so client JS can offer "open with" (Android chooser).
-                sb.append("""<div class="item file" data-name="${escHtml(eName)}" data-size="${e.size}" data-date="${e.lastModified}" data-mime="${escHtml(mime)}"$playAttr$subsAttr$thumbAttr>""")
+                sb.append("""<div class="item file" data-name="${escHtml(eName)}" data-size="${e.size}" data-date="${e.lastModified}" data-mime="${escHtml(mime)}"$playAttr$subsAttr$thumbAttr$inlineAttr>""")
                 // Tapping the name opens the file directly: the browser plays/shows it inline
                 // where it can; on Android, JS below hands it to the OS "open with" chooser
                 // (VLC/MX for video, etc.). The ⬇ button is the only download action.
@@ -778,12 +792,11 @@ var curEl=null,curIdx=-1;
 var fba=document.getElementById('plfba');
 function stop(){if(curEl){try{curEl.pause();}catch(_){}curEl.removeAttribute('src');try{curEl.load();}catch(_){}curEl.remove();curEl=null;}}
 function close(){stop();ov.classList.remove('on');document.body.style.overflow='';}
-function canPlay(el,mime){try{return !!(el.canPlayType&&el.canPlayType(mime).replace('no',''));}catch(_){return false;}}
 function playAt(idx){
 if(idx<0||idx>=media.length)return;
 curIdx=idx;var it=media[idx];
 var a=it.querySelector('.item-main'),url=a.getAttribute('href');
-var mime=it.dataset.mime||'',name=it.dataset.name||'',kind=it.dataset.play;
+var name=it.dataset.name||'',kind=it.dataset.play;
 tt.textContent=name;
 stop();fb.classList.remove('on');vs.style.display='';
 // External-player + download links (always available, work for every codec).
@@ -798,7 +811,7 @@ fba.innerHTML='<a class="pl-btn" href="'+m3u+'">🎬 Open in default player</a>'
 var el=document.createElement(kind==='a'?'audio':'video');
 el.controls=true;el.autoplay=true;el.setAttribute('playsinline','');el.preload='auto';
 el.setAttribute('crossorigin','anonymous');
-var supported=canPlay(el,mime);
+var supported=!!it.dataset.inline;
 if(supported){
 el.src=url;
 // Attach sidecar subtitle tracks (served as WebVTT via ?vtt=1). First one shows by default.
