@@ -27,13 +27,13 @@ class SavedStore(context: Context) {
         val root = runCatching { JSONObject(file.readText()) }.getOrDefault(JSONObject())
         root.optJSONArray("playlists")?.let { arr ->
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
+                val o = arr.optJSONObject(i) ?: continue
                 val ch = o.optJSONArray("channels") ?: JSONArray()
-                playlistList.add(SavedPlaylist(o.optString("name"), (0 until ch.length()).map { jsonToLink(ch.getJSONObject(it)) }))
+                playlistList.add(SavedPlaylist(o.optString("name"), (0 until ch.length()).mapNotNull { ch.optJSONObject(it)?.let(::jsonToLink) }))
             }
         }
         root.optJSONArray("channels")?.let { arr ->
-            for (i in 0 until arr.length()) channelList.add(jsonToLink(arr.getJSONObject(i)))
+            for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { channelList.add(jsonToLink(it)) }
         }
     }
 
@@ -100,7 +100,13 @@ class SavedStore(context: Context) {
                 })
                 put("channels", JSONArray().apply { chs.forEach { put(linkToJson(it)) } })
             }.toString()
-            runCatching { file.writeText(json) }
+            // Atomic replace: write a temp file then rename, so a kill / disk-full mid-write can't
+            // truncate saved_links.json and silently wipe every saved playlist on next launch.
+            runCatching {
+                val tmp = File(file.parentFile, "${file.name}.tmp")
+                tmp.writeText(json)
+                if (!tmp.renameTo(file)) { tmp.copyTo(file, overwrite = true); tmp.delete() }
+            }
         }
     }
 }

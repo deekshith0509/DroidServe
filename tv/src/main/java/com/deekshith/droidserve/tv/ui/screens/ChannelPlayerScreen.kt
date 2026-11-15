@@ -38,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.KeyEventType
@@ -82,8 +83,9 @@ import kotlinx.coroutines.delay
 
 private const val DEFAULT_UA = "Mozilla/5.0 (Linux; Android TV) DroidServe/ExoPlayer"
 private const val MAX_RETRIES = 3
-
-private class Reconnect { var attempts = 0 }
+// A stream must play this long before a later drop re-earns a full retry budget; without it a
+// stream that flaps READY↔error resets the counter forever and the player reconnects endlessly.
+private const val STABLE_MS = 15_000L
 
 /**
  * Full-screen native IPTV player. One long-lived ExoPlayer plays the current channel; flipping
@@ -112,28 +114,53 @@ fun ChannelPlayerScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val exo = remember { ExoPlayer.Builder(context).build().apply { playWhenReady = true } }
-    val recon = remember { Reconnect() }
     val handler = remember { Handler(Looper.getMainLooper()) }
     var playerState by remember { mutableIntStateOf(Player.STATE_IDLE) }
     var failed by remember { mutableStateOf(false) }
+    var reconnectAttempt by remember { mutableIntStateOf(0) }
+    val lastReadyAt = remember { longArrayOf(0L) }
     var tracks by remember { mutableStateOf<Tracks?>(null) }
     var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
     var menuOpen by remember { mutableStateOf(false) }
     var sleepMin by remember { mutableIntStateOf(0) }
     var slept by remember { mutableStateOf(false) }
+    var userPaused by remember { mutableStateOf(false) }
 
     DisposableEffect(exo) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(s: Int) {
                 playerState = s
-                if (s == Player.STATE_READY) { recon.attempts = 0; failed = false }
+                if (s == Player.STATE_READY) {
+                    reconnectAttempt = 0; failed = false
+                    lastReadyAt[0] = android.os.SystemClock.elapsedRealtime()
+                }
             }
             override fun onPlayerError(e: PlaybackException) {
-                // Live IPTV streams drop constantly — re-prepare with backoff before giving up.
-                if (recon.attempts < MAX_RETRIES) {
-                    recon.attempts++
-                    handler.postDelayed({ runCatching { exo.prepare(); exo.play() } }, 1200L * recon.attempts)
-                } else failed = true
+                // Non-recoverable errors won't fix themselves by retrying — fail fast with a clear
+                // message instead of looping the whole budget. Validated against the real playlist:
+                // dead-DNS + 4xx are ~15% of channels and never recover in-session. Walk the cause
+                // chain because Media3 nests the HTTP/DNS exception below the PlaybackException.
+                var cause: Throwable? = e.cause
+                var httpStatus: Int? = null
+                var dnsDead = false
+                while (cause != null) {
+                    if (cause is androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) httpStatus = cause.responseCode
+                    if (cause is java.net.UnknownHostException) dnsDead = true
+                    cause = cause.cause
+                }
+                if (dnsDead || e.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND || httpStatus in 400..499) {
+                    failed = true; reconnectAttempt = 0; return
+                }
+                // Live IPTV streams drop constantly — re-prepare with backoff before giving up. A
+                // drop after steady playback re-earns the full budget; brief READY flaps count
+                // toward the cap so a dead/looping stream fails instead of reconnecting forever.
+                val stable = lastReadyAt[0] != 0L &&
+                    android.os.SystemClock.elapsedRealtime() - lastReadyAt[0] > STABLE_MS
+                val attempt = if (stable) 1 else reconnectAttempt + 1
+                if (attempt <= MAX_RETRIES) {
+                    reconnectAttempt = attempt
+                    handler.postDelayed({ runCatching { exo.prepare(); exo.play() } }, 1200L * attempt)
+                } else { failed = true; reconnectAttempt = 0 }
             }
             override fun onTracksChanged(t: Tracks) { tracks = t }
         }
@@ -145,7 +172,7 @@ fun ChannelPlayerScreen(
         val obs = LifecycleEventObserver { _, e ->
             when (e) {
                 Lifecycle.Event.ON_STOP -> exo.pause()
-                Lifecycle.Event.ON_START -> if (!slept) exo.play()
+                Lifecycle.Event.ON_START -> if (!slept && !userPaused) exo.play()
                 else -> {}
             }
         }
@@ -153,9 +180,16 @@ fun ChannelPlayerScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
 
+    // Keep the TV awake while the player is on-screen — live IPTV goes long spells with no key input.
+    DisposableEffect(Unit) {
+        val window = (context as? android.app.Activity)?.window
+        window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose { window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+    }
+
     val current = state.current
     LaunchedEffect(current.id) {
-        failed = false; slept = false; recon.attempts = 0
+        failed = false; slept = false; userPaused = false; reconnectAttempt = 0; lastReadyAt[0] = 0L
         handler.removeCallbacksAndMessages(null)
         val http = DefaultHttpDataSource.Factory()
             .setUserAgent(current.userAgent?.takeIf { it.isNotBlank() } ?: DEFAULT_UA)
@@ -205,7 +239,7 @@ fun ChannelPlayerScreen(
                     KeyEvent.KEYCODE_DPAD_RIGHT -> { onPreviousChannel(); true }
                     KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_BUTTON_MODE -> { menuOpen = true; true }
                     KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_SPACE ->
-                        { if (exo.isPlaying) exo.pause() else exo.play(); true }
+                        { if (exo.isPlaying) { exo.pause(); userPaused = true } else { exo.play(); userPaused = false }; true }
                     else -> false
                 }
             },
@@ -222,26 +256,29 @@ fun ChannelPlayerScreen(
                 }
             },
             update = { it.resizeMode = resizeMode },
+            onRelease = { it.player = null },
         )
 
-        if (playerState == Player.STATE_BUFFERING && !failed && !slept) {
-            CircularProgressIndicator(color = DsColor.Amber, modifier = Modifier.align(Alignment.Center).size(48.dp))
-        }
-
-        if (slept) {
-            Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+        when {
+            slept -> Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                 DsIcon(DsIcons.Play, tint = DsColor.Amber, size = 40.dp)
                 Spacer(Modifier.height(10.dp))
                 Text("Sleep timer — press OK to resume", style = DsType.Title)
             }
-        } else if (failed) {
-            Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            failed -> Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 DsIcon(DsIcons.Warning, tint = DsColor.Coral, size = 40.dp)
                 Spacer(Modifier.height(10.dp))
                 Text("Can't play “${current.label}”", style = DsType.Title)
                 Spacer(Modifier.height(4.dp))
                 Text("Press ↑/↓ for another channel, or MENU → open externally.", style = DsType.Meta)
             }
+            reconnectAttempt > 0 -> Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator(color = DsColor.Amber, modifier = Modifier.size(48.dp))
+                Spacer(Modifier.height(10.dp))
+                Text("Reconnecting… ($reconnectAttempt/$MAX_RETRIES)", style = DsType.Meta)
+            }
+            playerState == Player.STATE_BUFFERING ->
+                CircularProgressIndicator(color = DsColor.Amber, modifier = Modifier.align(Alignment.Center).size(48.dp))
         }
 
         if (state.numberInput.isNotEmpty()) {
@@ -359,6 +396,7 @@ private fun ChannelInfoBar(state: UiScreen.ChannelPlayer, modifier: Modifier) {
 private fun ChannelOverlay(state: UiScreen.ChannelPlayer, firstFocus: FocusRequester, onJump: (Int) -> Unit) {
     var category by remember { mutableStateOf<String?>(null) }
     var query by remember { mutableStateOf("") }
+    val searchFocus = remember { FocusRequester() }
     val categories = remember(state.channels) { state.channels.mapNotNull { it.group }.distinct() }
     val f = query.trim().lowercase()
     val filtered = remember(state.channels, category, f) {
@@ -372,7 +410,9 @@ private fun ChannelOverlay(state: UiScreen.ChannelPlayer, firstFocus: FocusReque
 
     Box(Modifier.fillMaxHeight().width(420.dp).background(DsColor.Ink.copy(alpha = 0.96f))) {
         Column(Modifier.fillMaxSize().padding(16.dp)) {
-            DsTextField(query, { query = it }, "Search channels…", Modifier.fillMaxWidth())
+            DsTextField(query, { query = it }, "Search channels…", Modifier.fillMaxWidth().focusRequester(searchFocus).focusProperties { down = firstFocus })
+            Spacer(Modifier.height(6.dp))
+            Text("◄ Search    ·    ▼ List", style = DsType.Caption)
             if (categories.isNotEmpty()) {
                 Spacer(Modifier.height(10.dp))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -396,7 +436,8 @@ private fun ChannelOverlay(state: UiScreen.ChannelPlayer, firstFocus: FocusReque
                     items(filtered.size, key = { filtered[it].value.id }) { r ->
                         val gi = filtered[r].index
                         val ch = filtered[r].value
-                        val mod = if (r == focusRow) Modifier.focusRequester(firstFocus) else Modifier
+                        val mod = Modifier.focusProperties { left = searchFocus }
+                            .then(if (r == focusRow) Modifier.focusRequester(firstFocus) else Modifier)
                         FocusRow(onClick = { onJump(gi) }, modifier = mod) { focused ->
                             Text("${gi + 1}", style = DsType.Caption.copy(color = if (gi == state.index) DsColor.Amber else DsColor.Muted),
                                 modifier = Modifier.width(34.dp))

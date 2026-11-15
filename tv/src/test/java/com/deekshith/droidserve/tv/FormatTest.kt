@@ -8,7 +8,7 @@ import com.deekshith.droidserve.tv.ui.formatSize
 import com.deekshith.droidserve.tv.ui.iconFor
 import com.deekshith.droidserve.tv.ui.linkKind
 import com.deekshith.droidserve.tv.ui.metaFor
-import com.deekshith.droidserve.tv.ui.sampleSize
+import com.deekshith.droidserve.tv.sampleSize
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -66,5 +66,7 @@ class FormatTest {
         assertEquals(1, sampleSize(0, 0, 2560))
         assertTrue(sampleSize(5120, 5120, 2560) >= 2)
         assertTrue(sampleSize(10240, 10240, 2560) >= 4)
+        // Fire TV crash regression: the ~6000² logo must shrink enough to stay well under the Canvas limit.
+        assertTrue(6000 / sampleSize(6000, 6000, 1024) < 2048)
     }
 }

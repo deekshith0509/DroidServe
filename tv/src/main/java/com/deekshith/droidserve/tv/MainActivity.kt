@@ -43,7 +43,7 @@ class MainActivity : ComponentActivity() {
 
     private val vm: BrowseViewModel by viewModels()
 
-    private companion object { const val REQ_PLAYER = 1001; const val NAV_PLAYLIST = "nav_playlist" }
+    private companion object { const val REQ_PLAYER = 1001; const val NAV_PLAYLIST = "nav_playlist"; const val NAV_LAST_VIDEO = "nav_last_video" }
 
     // The URL of the video we last handed to an external player, so we can attribute the returned
     // resume position to the right file.
@@ -55,6 +55,7 @@ class MainActivity : ComponentActivity() {
         // Restore the screen we were on if the OS killed us in the background (e.g. a heavy external
         // player like VLC under memory pressure), so Back from the player returns here, not to home.
         savedInstanceState?.getString(NAV_PLAYLIST)?.let { vm.restorePlaylist(it) }
+        lastVideoUrl = savedInstanceState?.getString(NAV_LAST_VIDEO)
 
         PlaybackStore.pruneIfLarge(application)
 
@@ -104,6 +105,7 @@ class MainActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         (vm.screen.value as? UiScreen.PlaylistDetail)?.let { outState.putString(NAV_PLAYLIST, it.name) }
+        lastVideoUrl?.let { outState.putString(NAV_LAST_VIDEO, it) }
     }
 
     /**

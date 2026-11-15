@@ -52,14 +52,17 @@ object Epg {
     }
 
     private suspend fun programmes(guideUrl: String, wantedIds: Set<String>): List<Programme>? {
-        lock.withLock { if (cache.containsKey(guideUrl)) return cache[guideUrl] }
+        // Key by URL *and* the wanted set: two playlists can share one guide URL but filter to
+        // different channels, so caching under the bare URL starves whichever opens second of its EPG.
+        val key = guideUrl + "#" + wantedIds.sorted().hashCode()
+        lock.withLock { if (cache.containsKey(key)) return cache[key] }
         val parsed = withContext(Dispatchers.IO) {
             runCatching {
                 val text = fetch(guideUrl)
                 parse(text, wantedIds, MAX_PROGRAMMES)
             }.getOrNull()
         }
-        lock.withLock { cache[guideUrl] = parsed }
+        lock.withLock { cache[key] = parsed }
         return parsed
     }
 
@@ -73,16 +76,7 @@ object Epg {
             val gz = guideUrl.endsWith(".gz", true) || conn.contentEncoding?.contains("gzip", true) == true
             val raw = conn.inputStream
             val input = if (gz) GZIPInputStream(raw) else raw
-            val buf = ByteArray(MAX_BYTES)
-            var total = 0
-            input.use {
-                while (total < MAX_BYTES) {
-                    val n = it.read(buf, total, MAX_BYTES - total)
-                    if (n < 0) break
-                    total += n
-                }
-            }
-            return String(buf, 0, total, Charsets.UTF_8)
+            return input.use { it.readCapped(MAX_BYTES) }
         } finally { conn.disconnect() }
     }
 

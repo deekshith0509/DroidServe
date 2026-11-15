@@ -52,11 +52,3 @@ fun fmtTime(ms: Int): String {
     val s = ms / 1000
     return "%d:%02d".format(s / 60, s % 60)
 }
-
-/** Power-of-two downsample so a decoded image lands near [target] px on its longest edge. */
-fun sampleSize(w: Int, h: Int, target: Int): Int {
-    if (w <= 0 || h <= 0) return 1
-    var s = 1
-    while (w / (s * 2) >= target || h / (s * 2) >= target) s *= 2
-    return s
-}

@@ -16,6 +16,7 @@ import java.net.URL
 object IptvCatalog {
     private const val API = "https://iptv-org.github.io/api"
     private const val PL = "https://iptv-org.github.io/iptv"
+    private const val MAX_BYTES = 16 * 1024 * 1024   // iptv-org "all channels"/country dumps are multi-MB
 
     /** [builtin] entries load from `res/raw/<code>.m3u`; the rest fetch [url]. */
     data class Entry(val label: String, val url: String, val code: String = "", val builtin: Boolean = false)
@@ -91,7 +92,7 @@ object IptvCatalog {
         }
         try {
             if (conn.responseCode !in 200..299) throw RuntimeException("HTTP ${conn.responseCode}")
-            return conn.inputStream.bufferedReader().use { it.readText() }
+            return conn.inputStream.use { it.readCapped(MAX_BYTES) }
         } finally { conn.disconnect() }
     }
 }

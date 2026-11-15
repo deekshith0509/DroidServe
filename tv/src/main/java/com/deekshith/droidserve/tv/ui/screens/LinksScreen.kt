@@ -21,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
@@ -98,7 +99,7 @@ fun LinksScreen(
             )
             if (searchOpen) {
                 Spacer(Modifier.height(12.dp))
-                DsTextField(filter, { filter = it }, "Search links & playlists…", Modifier.width(380.dp).focusRequester(searchFocus))
+                DsTextField(filter, { filter = it }, "Search links & playlists…", Modifier.width(380.dp).focusRequester(searchFocus).focusProperties { down = firstFocus })
                 LaunchedEffect(Unit) { runCatching { searchFocus.requestFocus() } }
             }
             Spacer(Modifier.height(16.dp))
@@ -199,7 +200,7 @@ fun LinkGroupScreen(
             )
             if (searchOpen) {
                 Spacer(Modifier.height(12.dp))
-                DsTextField(filter, { filter = it }, "Search links…", Modifier.width(380.dp).focusRequester(searchFocus))
+                DsTextField(filter, { filter = it }, "Search links…", Modifier.width(380.dp).focusRequester(searchFocus).focusProperties { down = firstFocus })
                 LaunchedEffect(Unit) { runCatching { searchFocus.requestFocus() } }
             }
             Spacer(Modifier.height(16.dp))

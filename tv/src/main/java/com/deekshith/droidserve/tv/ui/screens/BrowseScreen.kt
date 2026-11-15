@@ -33,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.style.TextOverflow
@@ -103,7 +104,7 @@ fun BrowseScreen(
             )
             if (searchOpen) {
                 Spacer(Modifier.height(12.dp))
-                DsTextField(state.filter, onFilter, "Filter files in this folder…", Modifier.width(380.dp).focusRequester(searchFocus))
+                DsTextField(state.filter, onFilter, "Filter files in this folder…", Modifier.width(380.dp).focusRequester(searchFocus).focusProperties { down = firstItemFocus })
                 LaunchedEffect(Unit) { runCatching { searchFocus.requestFocus() } }
             }
             state.casting?.let {
