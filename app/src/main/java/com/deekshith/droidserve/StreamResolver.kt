@@ -62,11 +62,10 @@ object StreamResolver {
                         if (LinkClassifier.looksLikeM3u(body)) classifyM3u(url, body, maxEntries)
                         else {
                             val media = extractMediaUrl(body, url)
-                            // Found a real stream → playable. Otherwise keep the page URL but flag it
-                            // non-playable so the TV opens it in a browser (its own JS player)
-                            // instead of bouncing a native player.
-                            if (media != null) Outcome.Single(media, extractTitle(body), true)
-                            else Outcome.Single(url, extractTitle(body), false)
+                            if (media != null) {
+                                val ok = probePlayable(media, url)
+                                Outcome.Single(media, extractTitle(body), ok)
+                            } else Outcome.Single(url, extractTitle(body), false)
                         }
                     }
                     else -> Outcome.Single(url, null, true)              // unknown type — let a player try
@@ -212,6 +211,17 @@ object StreamResolver {
             else                                      -> URL(URL(baseUrl), raw).toString()
         }
     } catch (_: Exception) { raw }
+
+    private fun probePlayable(candidate: String, pageUrl: String): Boolean = try {
+        val conn = open(candidate)
+        conn.requestMethod = "GET"
+        conn.setRequestProperty("Range", "bytes=0-1023")
+        conn.setRequestProperty("Referer", pageUrl)
+        val code = conn.responseCode
+        val ctype = (conn.contentType ?: "").lowercase()
+        conn.disconnect()
+        code in 200..206 && (ctype.contains("video") || ctype.contains("audio") || ctype.contains("mpegurl") || ctype.contains("dash") || ctype.contains("octet-stream"))
+    } catch (_: Exception) { false }
 
     private fun open(url: String): HttpURLConnection =
         (URL(url).openConnection() as HttpURLConnection).apply {

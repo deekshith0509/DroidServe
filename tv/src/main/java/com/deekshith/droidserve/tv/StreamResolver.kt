@@ -1,5 +1,6 @@
 package com.deekshith.droidserve.tv
 
+import android.content.Context
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -37,8 +38,10 @@ object StreamResolver {
                         if (LinkClassifier.looksLikeM3u(body)) classifyM3u(url, body, maxEntries)
                         else {
                             val media = extractMediaUrl(body, url)
-                            if (media != null) Outcome.Single(media, extractTitle(body), true)
-                            else Outcome.Single(url, extractTitle(body), false)
+                            if (media != null) {
+                                val ok = probePlayable(media, url)
+                                Outcome.Single(media, extractTitle(body), ok)
+                            } else Outcome.Single(url, extractTitle(body), false)
                         }
                     }
                     else -> Outcome.Single(url, null, true)
@@ -206,6 +209,18 @@ object StreamResolver {
         return out.toString("UTF-8")
     }
 
+    private fun probePlayable(candidate: String, pageUrl: String): Boolean = try {
+        val origin = try { java.net.URL(pageUrl).let { it.protocol + "://" + it.host } } catch (_: Exception) { "" }
+        val conn = open(candidate)
+        conn.requestMethod = "GET"
+        conn.setRequestProperty("Range", "bytes=0-1023")
+        if (origin.isNotEmpty()) conn.setRequestProperty("Referer", pageUrl)
+        val code = conn.responseCode
+        val ctype = (conn.contentType ?: "").lowercase()
+        conn.disconnect()
+        code in 200..206 && (ctype.contains("video") || ctype.contains("audio") || ctype.contains("mpegurl") || ctype.contains("dash") || ctype.contains("octet-stream"))
+    } catch (_: Exception) { false }
+
     private fun isSupportedLink(url: String): Boolean {
         return url.isNotEmpty() && Regex("^(https?|rtsps?|rtmps?|mms|ftp|magnet):", RegexOption.IGNORE_CASE).containsMatchIn(url)
     }
@@ -214,14 +229,20 @@ object StreamResolver {
     private const val RESOLVE_TTL_MS = 2 * 60 * 1000L
 
     /** Just-in-time resolve a channel for playback (IO, short-TTL cached, headers preserved). */
-    suspend fun resolveForPlay(link: StreamLink): StreamLink = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    suspend fun resolveForPlay(context: Context, link: StreamLink): StreamLink = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         val now = System.currentTimeMillis()
         synchronized(resolveCache) {
             resolveCache[link.url]?.let { (at, v) -> if (now - at < RESOLVE_TTL_MS) return@withContext v }
         }
-        val resolved = when (val o = classify(link.url)) {
-            is Outcome.Single -> link.copy(url = o.url, playable = o.playable)
+        val outcome = classify(link.url)
+        var resolved = when (outcome) {
+            is Outcome.Single -> link.copy(url = outcome.url, playable = outcome.playable)
             is Outcome.Collection -> link
+        }
+        // WebView fallback for JS-computed streams.
+        if (!resolved.playable && link.url.startsWith("http", true)) {
+            val wv = WebViewResolver.extract(context, link.url)
+            if (wv != null) resolved = link.copy(url = wv, playable = true)
         }
         synchronized(resolveCache) { resolveCache[link.url] = now to resolved }
         resolved

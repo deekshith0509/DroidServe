@@ -583,7 +583,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         if (!link.playable) {
             // Resolve watch pages before in-app play.
             viewModelScope.launch {
-                val resolved = StreamResolver.resolveForPlay(link)
+                val resolved = StreamResolver.resolveForPlay(getApplication(), link)
                 if (resolved.playable) {
                     val ctx = channelContext()
                     val queue = if (ctx.any { it.id == link.id }) ctx else listOf(resolved)
@@ -758,7 +758,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     fun openCurrentExternally() {
         val s = _screen.value as? UiScreen.ChannelPlayer ?: return
         viewModelScope.launch {
-            val resolved = StreamResolver.resolveForPlay(s.current)
+            val resolved = StreamResolver.resolveForPlay(getApplication(), s.current)
             VlcLauncher.launch(getApplication(), listOf(resolved))
         }
     }
@@ -767,7 +767,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     fun playCurrentInVlc() {
         val s = _screen.value as? UiScreen.ChannelPlayer ?: return
         viewModelScope.launch {
-            val resolved = StreamResolver.resolveForPlay(s.current)
+            val resolved = StreamResolver.resolveForPlay(getApplication(), s.current)
             VlcLauncher.launch(getApplication(), listOf(resolved))
         }
     }
