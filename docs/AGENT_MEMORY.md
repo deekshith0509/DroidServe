@@ -13,7 +13,8 @@
 - `docs/API.md`, `README.md`.
 
 ## Pending / known issues
-- TV in-app player buttons reported not working; needs separate investigation in `tv/.../ChannelPlayerScreen.kt`.
+- Fixed TV player “Open in external player” to use the OS chooser instead of VLC; VLC button remains separate.
+- Remaining TV player issues may need device testing.
 - Gradle deps not cached in this Termux environment; could not compile/test locally.
 - Need run `./gradlew testDebugUnitTest` in CI after push.
 

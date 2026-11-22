@@ -765,12 +765,12 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         _open.tryEmit(OpenRequest(link.url, "", forceChooser = true))
     }
 
-    /** Hand the current channel to VLC (resolved + wrapped) for codecs ExoPlayer can't do. */
+    /** Hand the current channel to the OS default player chooser (VLC/MX/etc.) for codecs ExoPlayer can't do. */
     fun openCurrentExternally() {
         val s = _screen.value as? UiScreen.ChannelPlayer ?: return
         viewModelScope.launch {
             val resolved = StreamResolver.resolveForPlay(getApplication(), s.current)
-            VlcLauncher.launch(getApplication(), listOf(resolved))
+            _open.tryEmit(OpenRequest(resolved.url, "", forceChooser = true))
         }
     }
 
