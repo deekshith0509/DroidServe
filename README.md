@@ -16,7 +16,7 @@ Browse, stream, and download any file on your phone from any device on the same 
 
 </div>
 
-> **Latest release: v1.13.6** — adds file upload support (web UI ⬆ Upload, `POST /api/upload`, `PUT /<path>`), plus consistent signing, VLC-first external playback, advanced stream extraction with WebView fallback, hardened parsers, and state-complete TV player actions.
+> **Latest release: v1.13.7** — adds file upload support (web UI ⬆ Upload, `POST /api/upload`, `PUT /<path>`), plus consistent signing, VLC-first external playback, advanced stream extraction with WebView fallback, hardened parsers, and state-complete TV player actions.
 
 ---
 

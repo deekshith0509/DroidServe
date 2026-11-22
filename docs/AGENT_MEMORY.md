@@ -14,6 +14,7 @@
 
 ## Pending / known issues
 - Fixed TV player “Open in external player” to use the OS chooser instead of VLC; VLC button remains separate.
+- Added TV audit doc (`docs/TV_AUDIT.md`); version bump and release v1.13.6.
 - Remaining TV player issues may need device testing.
 - Gradle deps not cached in this Termux environment; could not compile/test locally.
 - Need run `./gradlew testDebugUnitTest` in CI after push.
