@@ -16,6 +16,8 @@ Browse, stream, and download any file on your phone from any device on the same 
 
 </div>
 
+> **Latest release: v1.13.4** — consistent signing across debug/release, VLC-first external playback, advanced stream extraction with WebView fallback, hardened parsers, and state-complete TV player actions.
+
 ---
 
 ## What It Does
