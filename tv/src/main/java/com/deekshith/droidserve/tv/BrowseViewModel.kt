@@ -754,6 +754,12 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Copy a streaming link URL to the clipboard. */
+    fun copyLinkUrl(link: StreamLink) {
+        val cm = getApplication<android.app.Application>().getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("url", link.url))
+    }
+
     /** Open a streaming link in the system browser/chooser. */
     fun openLinkExternally(link: StreamLink) {
         _open.tryEmit(OpenRequest(link.url, "", forceChooser = true))
