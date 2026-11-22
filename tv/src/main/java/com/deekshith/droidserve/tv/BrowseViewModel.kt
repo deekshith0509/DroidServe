@@ -778,6 +778,14 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         VlcLauncher.launch(getApplication(), s.channels)
     }
 
+    /** Play a streaming link in VLC (resolved + wrapped). */
+    fun playLinkInVlc(link: StreamLink) {
+        viewModelScope.launch {
+            val resolved = StreamResolver.resolveForPlay(getApplication(), link)
+            VlcLauncher.launch(getApplication(), listOf(resolved))
+        }
+    }
+
     /** Open the now/next TV guide for the current player's channels. */
     fun openEpgGuide() {
         val p = _screen.value as? UiScreen.ChannelPlayer ?: return
