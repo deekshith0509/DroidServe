@@ -754,6 +754,11 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Open a streaming link in the system browser/chooser. */
+    fun openLinkExternally(link: StreamLink) {
+        _open.tryEmit(OpenRequest(link.url, "", forceChooser = true))
+    }
+
     /** Hand the current channel to VLC (resolved + wrapped) for codecs ExoPlayer can't do. */
     fun openCurrentExternally() {
         val s = _screen.value as? UiScreen.ChannelPlayer ?: return

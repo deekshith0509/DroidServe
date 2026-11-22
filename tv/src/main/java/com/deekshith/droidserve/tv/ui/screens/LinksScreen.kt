@@ -62,6 +62,7 @@ fun LinksScreen(
     isGroupSaved: (String) -> Boolean,
     isChannelSaved: (String) -> Boolean,
     onPlayVlc: (StreamLink) -> Unit = {},
+    onOpenExternal: (StreamLink) -> Unit = {},
 ) {
     val firstFocus = remember { FocusRequester() }
     val searchFocus = remember { FocusRequester() }
@@ -160,6 +161,7 @@ fun LinksScreen(
                 }
                 focusedLink?.let { l ->
                     add(ContextAction("Play in VLC", DsIcons.Play) { onPlayVlc(l) })
+                    add(ContextAction("Open in browser", DsIcons.Link) { onOpenExternal(l) })
                     if (isChannelSaved(l.id)) add(ContextAction("Remove link from Home", DsIcons.Warning, destructive = true) { onRemoveChannel(l.id) })
                     else add(ContextAction("Save link to Home", DsIcons.Link) { onSaveChannel(l) })
                 }
@@ -182,6 +184,7 @@ fun LinkGroupScreen(
     isGroupSaved: (String) -> Boolean,
     isChannelSaved: (String) -> Boolean,
     onPlayVlc: (StreamLink) -> Unit = {},
+    onOpenExternal: (StreamLink) -> Unit = {},
 ) {
     val firstFocus = remember { FocusRequester() }
     val searchFocus = remember { FocusRequester() }
@@ -238,6 +241,7 @@ fun LinkGroupScreen(
                 else add(ContextAction("Save whole playlist to Home", DsIcons.ListView) { onSaveGroup(state.group) })
                 focusedLink?.let { l ->
                     add(ContextAction("Play in VLC", DsIcons.Play) { onPlayVlc(l) })
+                    add(ContextAction("Open in browser", DsIcons.Link) { onOpenExternal(l) })
                     if (isChannelSaved(l.id)) add(ContextAction("Remove link from Home", DsIcons.Warning, destructive = true) { onRemoveChannel(l.id) })
                     else add(ContextAction("Save link to Home", DsIcons.Link) { onSaveChannel(l) })
                 }
