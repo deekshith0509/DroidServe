@@ -91,6 +91,8 @@ data class ServerOptions(
     val showHidden: Boolean = false,   // list/serve dotfiles & __system entries
     val allowZip: Boolean = true,      // expose ?zip=1 folder downloads
     val allowDownload: Boolean = true, // expose forced (?dl=1) file downloads
+    val allowUpload: Boolean = true,   // allow receiving files via upload
+    val uploadMaxBytes: Int = 1024 * 1024 * 1024, // 1 GB per upload
     val title: String = "DroidServe", // shown in the web UI header / tab
     // Playlist import limits — cap body/URL fetch size and max entries per batch.
     val importMaxBytes: Int = 64 * 1024 * 1024, // 64 MB body guard (OOM/DoS only; any real playlist fits)
@@ -285,6 +287,16 @@ class HttpServer(
             return ck(jsonResponse(ApiJson.importResult(v, list, kept.size, parsed.size - kept.size)))
         }
 
+        // POST/PUT upload — receive a file into the current (or specified) folder.
+        if (method == Method.PUT || (method == Method.POST && isUploadRequest(session))) {
+            if (!checkAuth(session)) return unauthorized()
+            val nc = authNeeded() && !hasValidCookie(session)
+            fun ck(r: Response) = r.also {
+                if (nc) it.addHeader("Set-Cookie", "$COOKIE_NAME=$sessionToken; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly")
+            }
+            ServerStateHolder.incrementRequests()
+            return ck(handleUpload(session))
+        }
         if (method != Method.GET && method != Method.HEAD)
             return errJson(Response.Status.METHOD_NOT_ALLOWED, "Method not allowed")
 
@@ -679,7 +691,7 @@ class HttpServer(
             Response.Status.OK, "text/html; charset=utf-8",
             FileUtils.buildHtml(
                 entries, urlPath, dirName,
-                options.title, options.allowZip, options.allowDownload, serverFacts(),
+                options.title, options.allowZip, options.allowDownload, options.allowUpload, serverFacts(),
                 // Only embed the token in links when auth is enforced; external players
                 // (VLC/MX) carry it in the URL since they send no cookie/Basic header.
                 authToken = if (authNeeded()) sessionToken else null
@@ -1133,6 +1145,169 @@ class HttpServer(
             it.addHeader("Cache-Control", "no-store")
             cors(it)
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Upload — receive files into a SAF folder (POST raw/multipart or PUT)
+    // -----------------------------------------------------------------------
+    private fun isUploadRequest(session: IHTTPSession): Boolean {
+        val path = session.uri.trimStart('/')
+        if (path == "api/upload" || path == "upload" ||
+            path.startsWith("api/upload/") || path.startsWith("upload/")) return true
+        if (session.parameters["upload"]?.firstOrNull() == "1") return true
+        if (!session.parameters["name"].isNullOrEmpty()) return true
+        if (!session.parameters["filename"].isNullOrEmpty()) return true
+        val ct = session.headers["content-type"] ?: ""
+        if (ct.contains("multipart/form-data", ignoreCase = true)) return true
+        if (ct.contains("application/octet-stream", ignoreCase = true)) return true
+        val last = path.substringAfterLast('/')
+        val declared = session.headers["content-length"]?.toLongOrNull() ?: 0L
+        if (last.contains('.') && declared > 0) return true
+        return false
+    }
+
+    private fun handleUpload(session: IHTTPSession): Response {
+        val uriPath = session.uri.trimStart('/')
+        if (uriPath.any { it < ' ' } || uriPath.split('/').any { it == ".." })
+            return errJson(Response.Status.FORBIDDEN, "Forbidden")
+
+        val contentLength = session.headers["content-length"]?.toLongOrNull() ?: -1L
+        val maxBytes = minOf(options.importMaxBytes, options.uploadMaxBytes).toLong()
+        if (contentLength > maxBytes) return errJson(Response.Status.PAYLOAD_TOO_LARGE, "File too large")
+
+        val qPath = session.parameters["path"]?.firstOrNull()
+            ?: session.parameters["dir"]?.firstOrNull()
+            ?: session.parameters["folder"]?.firstOrNull()
+        val qName = session.parameters["name"]?.firstOrNull()
+            ?: session.parameters["filename"]?.firstOrNull()
+            ?: session.parameters["file"]?.firstOrNull()
+
+        var parentRel = qPath?.trim('/')?.trim() ?: ""
+        var fileName: String? = qName?.trim()?.takeIf { it.isNotEmpty() }
+
+        val segments = uriPath.split('/').filter { it.isNotEmpty() }
+        when {
+            uriPath == "api/upload" || uriPath == "upload" -> { /* query only */ }
+            uriPath.startsWith("api/upload/") || uriPath.startsWith("upload/") -> {
+                val suffix = uriPath.removePrefix("api/upload/").removePrefix("upload/").trim('/')
+                val s = suffix.split('/').filter { it.isNotEmpty() }
+                if (s.isNotEmpty()) {
+                    if (fileName == null) fileName = s.last()
+                    if (s.size > 1 && (qPath == null || qPath.isBlank())) {
+                        parentRel = s.dropLast(1).joinToString("/")
+                    }
+                }
+            }
+            else -> {
+                if (segments.isNotEmpty()) {
+                    val resolved = runCatching { resolveFast(uriPath) }.getOrNull()
+                    if (resolved != null && resolved.isDirectory) {
+                        if (qPath.isNullOrBlank()) parentRel = uriPath.trim('/')
+                    } else {
+                        if (fileName == null) fileName = segments.last()
+                        val parentSegs = segments.dropLast(1)
+                        if (qPath.isNullOrBlank()) parentRel = parentSegs.joinToString("/")
+                    }
+                }
+            }
+        }
+
+        if (parentRel.split('/').filter { it.isNotEmpty() }.any { it == ".." || it.any { c -> c < ' ' } })
+            return errJson(Response.Status.FORBIDDEN, "Forbidden")
+
+        val parentDocId = if (parentRel.isEmpty()) rootDocId
+        else (resolveFast(parentRel)?.takeIf { it.isDirectory }?.docId
+            ?: return errJson(Response.Status.NOT_FOUND, "Directory not found"))
+
+        fun safeName(raw: String): String? {
+            val s = raw.substringAfterLast('/').substringAfterLast('\\').trim()
+            if (s.isEmpty() || s == "." || s == "..") return null
+            return s
+        }
+
+        val uploaded = mutableListOf<String>()
+
+        val ct = session.headers["content-type"] ?: ""
+        if (ct.contains("multipart/form-data", ignoreCase = true)) {
+            val files = mutableMapOf<String, String>()
+            try { session.parseBody(files) }
+            catch (_: Exception) { return errJson(Response.Status.BAD_REQUEST, "Malformed multipart body") }
+
+            for ((field, tmpPath) in files) {
+                val candidate = if (!qName.isNullOrBlank()) qName!! else (session.parameters["filename"]?.firstOrNull() ?: field)
+                val name = safeName(candidate) ?: continue
+                val mime = FileUtils.getMimeType(name)
+                val targetUri = findOrCreateDoc(parentDocId, name, mime)
+                    ?: return errJson(Response.Status.INTERNAL_ERROR, "Cannot create file")
+                try {
+                    java.io.FileInputStream(tmpPath).use { input ->
+                        context.contentResolver.openOutputStream(targetUri, "w")?.use { out ->
+                            input.copyTo(out)
+                        } ?: return errJson(Response.Status.INTERNAL_ERROR, "Cannot open output")
+                    }
+                } catch (_: Exception) {
+                    return errJson(Response.Status.INTERNAL_ERROR, "Write failed")
+                }
+                try { java.io.File(tmpPath).delete() } catch (_: Exception) {}
+                uploaded.add(name)
+            }
+        } else {
+            val rawName = fileName ?: return errJson(Response.Status.BAD_REQUEST, "Missing file name")
+            val name = safeName(rawName) ?: return errJson(Response.Status.BAD_REQUEST, "Invalid file name")
+            val mime = FileUtils.getMimeType(name)
+            val targetUri = findOrCreateDoc(parentDocId, name, mime)
+                ?: return errJson(Response.Status.INTERNAL_ERROR, "Cannot create file")
+            var written = 0L
+            try {
+                session.inputStream.use { input ->
+                    context.contentResolver.openOutputStream(targetUri, "w")?.use { out ->
+                        val buf = ByteArray(262144)
+                        while (true) {
+                            val toRead = if (contentLength > 0)
+                                minOf(buf.size.toLong(), contentLength - written).toInt() else buf.size
+                            if (contentLength > 0 && toRead <= 0) break
+                            val n = input.read(buf, 0, if (toRead <= 0) buf.size else toRead)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                            written += n
+                            if (written > maxBytes) throw java.io.IOException("too large")
+                            if (contentLength > 0 && written >= contentLength) break
+                        }
+                    } ?: return errJson(Response.Status.INTERNAL_ERROR, "Cannot open output")
+                }
+            } catch (e: Exception) {
+                return if (written > maxBytes)
+                    errJson(Response.Status.PAYLOAD_TOO_LARGE, "File too large")
+                else errJson(Response.Status.INTERNAL_ERROR, "Write failed")
+            }
+            uploaded.add(name)
+        }
+
+        if (uploaded.isEmpty()) return errJson(Response.Status.BAD_REQUEST, "No file uploaded")
+
+        DirectoryCache.invalidate(parentDocId)
+
+        val relPaths = uploaded.map { if (parentRel.isEmpty()) it else "$parentRel/$it" }
+        val sb = StringBuilder()
+        sb.append("{\"ok\":true")
+        if (uploaded.size == 1) {
+            sb.append(",\"name\":\"").append(ApiJson.escape(uploaded[0])).append("\"")
+            sb.append(",\"path\":\"").append(ApiJson.escape(relPaths[0])).append("\"")
+        }
+        sb.append(",\"uploaded\":[")
+        for ((i, n) in uploaded.withIndex()) {
+            if (i > 0) sb.append(',')
+            sb.append('"').append(ApiJson.escape(n)).append('"')
+        }
+        sb.append("]}")
+        return jsonResponse(sb.toString())
+    }
+
+    private fun findOrCreateDoc(parentDocId: String, fileName: String, mime: String): Uri? {
+        val existing = listFast(parentDocId).firstOrNull { !it.isDirectory && it.name == fileName }
+        if (existing != null) return existing.uri
+        val parentUri = DocumentsContract.buildDocumentUriUsingTree(rootUri, parentDocId)
+        return runCatching { DocumentsContract.createDocument(context.contentResolver, parentUri, mime, fileName) }.getOrNull()
     }
 
     // -----------------------------------------------------------------------

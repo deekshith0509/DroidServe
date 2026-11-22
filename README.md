@@ -150,6 +150,7 @@ The native-client API used by the TV app and accessible from any HTTP client.
 | `/thumb/<path>?w=160\|320\|480` | GET | Cached WebP thumbnail |
 | `/meta/<path>` | GET | Media metadata (dimensions, duration, title, artist) |
 | `/<path>` | GET/HEAD | File serving (range requests, `?m3u=1`, `?vtt=1`, `?dl=1`, `?zip=1`) |
+| `/api/upload` | POST/PUT | Upload a file into a folder (`?name=…&dir=…`, raw body or multipart) |
 | `*` | OPTIONS | CORS preflight |
 
 All responses include `Access-Control-Allow-Origin: *`. Token auth via `?tok=<token>` works on every route for external player compatibility.
@@ -372,7 +373,7 @@ DroidServe requests **scoped storage access only** to the folder you explicitly 
 
 - **HTTP only** — no HTTPS/TLS. Use on trusted local networks.
 - **Single folder** — you share one root folder per server instance
-- **No upload** — read-only; the server cannot receive files
+- **Upload supported** — drop files into the current folder from the web UI (⬆ Upload button) or via `POST /api/upload` / `PUT /<path>`
 - **SAF limitations** — some system folders (Downloads, root) may not be selectable on all devices depending on OEM restrictions
 
 ---

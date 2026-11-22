@@ -16,6 +16,8 @@ Auth with a session cookie or a per-link token.
 | `/api/links/import` | POST | Bulk import an M3U body or URL |
 | `/api/links/import/preview` | GET | Preview an M3U URL (count + samples) |
 | `/api/remote/*` | GET/POST | TV now-playing and remote commands |
+| `/api/upload` | POST/PUT | Upload a file into a folder (`?name=…&dir=…`, raw body or multipart) |
+| `/<path>` | PUT | Upload/overwrite a file at that path |
 
 Responses are JSON unless noted. CORS headers are included on all responses.
 EOF

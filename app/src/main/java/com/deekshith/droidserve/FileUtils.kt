@@ -178,6 +178,7 @@ object FileUtils {
         title: String = "DroidServe",
         allowZip: Boolean = true,
         allowDownload: Boolean = true,
+        allowUpload: Boolean = true,
         serverFacts: List<Pair<String, String>> = emptyList(),
         authToken: String? = null
     ): String {
@@ -207,6 +208,9 @@ object FileUtils {
             val zipHref = if (here.isEmpty()) "/?zip=1" else "/$here?zip=1"
             sb.append("""<a class="sb zipall" href="""").append(zipHref).append(tokAmp)
             sb.append("""" aria-label="Download this folder as ZIP">⬇ Folder ZIP</a>""")
+        }
+        if (allowUpload) {
+            sb.append("""<label class="sb" style="cursor:pointer" aria-label="Upload files to this folder">⬆ Upload<input type="file" id="upf" multiple style="display:none"></label>""")
         }
         sb.append("""<button class="sb on" data-s="d">Default</button>""")
         sb.append("""<button class="sb" data-s="n">Name</button>""")
@@ -1181,6 +1185,21 @@ fetch('/api/links/poll?since='+ver,{credentials:'same-origin'}).then(function(r)
 .then(function(d){if(d&&open)render(d);if(open)loop();else polling=false;})
 .catch(function(){if(open)setTimeout(loop,2000);else polling=false;});
 })();}
+})();
+</script>
+<script>
+(function(){
+  var upf=document.getElementById('upf');
+  if(!upf)return;
+  upf.addEventListener('change',function(){
+    var files=Array.from(upf.files||[]); if(!files.length)return;
+    var dir=''; try{dir=decodeURIComponent(location.pathname.replace(/^\\/+|\\/+$/g,''));}catch(e){dir=location.pathname.replace(/^\\/+|\\/+$/g,'');}
+    files.forEach(function(f){
+      fetch('/api/upload?name='+encodeURIComponent(f.name)+'&dir='+encodeURIComponent(dir),{method:'POST',credentials:'same-origin',body:f})
+        .then(function(){location.reload();}).catch(function(){});
+    });
+    upf.value='';
+  });
 })();
 </script></body></html>"""
 }
