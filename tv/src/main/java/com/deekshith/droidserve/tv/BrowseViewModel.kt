@@ -273,7 +273,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     private val _connection = MutableStateFlow(ConnectionState.Live)
     val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
 
-    val vlcInstalled: Boolean get() = VlcLauncher.isInstalled(app)
+    val vlcInstalled: Boolean get() = VlcLauncher.isInstalled(getApplication())
 
     // One-shot events telling the Activity to fire an ACTION_VIEW intent (open in native player).
     private val _open = MutableSharedFlow<OpenRequest>(extraBufferCapacity = 4)
@@ -765,14 +765,14 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         val s = _screen.value as? UiScreen.ChannelPlayer ?: return
         viewModelScope.launch {
             val resolved = StreamResolver.resolveForPlay(s.current)
-            VlcLauncher.launch(app, listOf(resolved))
+            VlcLauncher.launch(getApplication(), listOf(resolved))
         }
     }
 
     /** Play all channels in VLC (exported as-is). */
     fun playAllInVlc() {
         val s = _screen.value as? UiScreen.ChannelPlayer ?: return
-        VlcLauncher.launch(app, s.channels)
+        VlcLauncher.launch(getApplication(), s.channels)
     }
 
     /** Open the now/next TV guide for the current player's channels. */
