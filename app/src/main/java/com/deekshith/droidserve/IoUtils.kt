@@ -4,14 +4,16 @@ import java.io.InputStream
 
 /** Bounded InputStream → UTF-8 String. Reads at most [max] bytes; never throws on truncation. */
 internal fun readCapped(input: InputStream, max: Int): String {
-    val buf = ByteArray(max)
+    val out = java.io.ByteArrayOutputStream(minOf(max, 64 * 1024))
+    val chunk = ByteArray(64 * 1024)
     var total = 0
     while (total < max) {
-        val n = input.read(buf, total, max - total)
+        val n = input.read(chunk, 0, minOf(chunk.size, max - total))
         if (n < 0) break
+        out.write(chunk, 0, n)
         total += n
     }
-    return String(buf, 0, total, Charsets.UTF_8)
+    return out.toString("UTF-8")
 }
 
 // Schemes a media player / torrent client / browser can actually open. Shared by the HTTP link

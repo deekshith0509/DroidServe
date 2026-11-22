@@ -34,6 +34,7 @@ object PlaylistImport {
         Regex("""$name="([^"]*)"""", RegexOption.IGNORE_CASE).find(line)?.groupValues?.get(1)?.trim()?.ifEmpty { null }
 
     fun parse(text: String, max: Int = Int.MAX_VALUE): List<Entry> {
+        val cleaned = text.removePrefix("\uFEFF")
         val out = ArrayList<Entry>()
         var title: String? = null
         var group: String? = null
@@ -42,8 +43,11 @@ object PlaylistImport {
         var userAgent: String? = null
         var referrer: String? = null
         var tvgUrl: String? = null   // playlist-level (from the #EXTM3U header); persists across entries
-        for (raw in text.lineSequence()) {
+        var linesScanned = 0
+        val MAX_LINES = 200_000
+        for (raw in cleaned.lineSequence()) {
             if (out.size >= max) break
+            if (linesScanned++ >= MAX_LINES) break
             val line = raw.trim()
             if (line.isEmpty()) continue
             when {

@@ -109,6 +109,9 @@ fun ChannelPlayerScreen(
     onPreviousChannel: () -> Unit,
     onSaveToHome: () -> Unit,
     onGuide: () -> Unit,
+    onVlc: () -> Unit = {},
+    onVlcAll: () -> Unit = {},
+    vlcInstalled: Boolean = false,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -299,7 +302,7 @@ fun ChannelPlayerScreen(
     }
 
     if (menuOpen) {
-        ContextMenu("Player", playerMenuActions(exo, tracks, resizeMode, sleepMin, { resizeMode = it }, { sleepMin = it; slept = false }, onExternal, state.title, onSaveToHome, onGuide), onDismiss = { menuOpen = false })
+        ContextMenu("Player", playerMenuActions(exo, tracks, resizeMode, sleepMin, { resizeMode = it }, { sleepMin = it; slept = false }, onExternal, state.title, onSaveToHome, onGuide, state.canGuide, vlcInstalled, state.channels.isNotEmpty(), onVlc, onVlcAll), onDismiss = { menuOpen = false })
     }
 
     LaunchedEffect(Unit) { runCatching { playerFocus.requestFocus() } }
@@ -317,9 +320,18 @@ private fun playerMenuActions(
     saveTitle: String?,
     onSave: () -> Unit,
     onGuide: () -> Unit,
+    canGuide: Boolean,
+    vlcInstalled: Boolean,
+    hasChannels: Boolean,
+    onVlc: () -> Unit,
+    onVlcAll: () -> Unit,
 ): List<ContextAction> = buildList {
-    add(ContextAction("TV guide (now & next)", DsIcons.Info) { onGuide() })
+    if (canGuide) add(ContextAction("TV guide (now & next)", DsIcons.Info) { onGuide() })
     if (saveTitle != null) add(ContextAction("Save “$saveTitle” to Home", DsIcons.Link) { onSave() })
+    if (vlcInstalled) {
+        add(ContextAction("Play this channel in VLC", DsIcons.Play) { onVlc() })
+        if (hasChannels) add(ContextAction("Play all in VLC", DsIcons.Play) { onVlcAll() })
+    }
     val groups = tracks?.groups ?: emptyList()
     val audio = groups.filter { it.type == C.TRACK_TYPE_AUDIO }
     if (audio.sumOf { it.length } > 1) {
@@ -456,7 +468,7 @@ private fun ChannelOverlay(state: UiScreen.ChannelPlayer, firstFocus: FocusReque
             }
         }
     }
-    InitialFocus(firstFocus, enabled = filtered.isNotEmpty(), state.index, category, f)
+    InitialFocus(firstFocus, enabled = filtered.isNotEmpty(), state.index, category)
 }
 
 @OptIn(UnstableApi::class)
