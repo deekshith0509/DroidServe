@@ -17,6 +17,16 @@
         android:name="android.software.leanback"
         android:required="false" />
 
+    <queries>
+        <package android:name="org.videolan.vlc" />
+        <package android:name="com.mxtech.videoplayer.ad" />
+        <package android:name="com.mxtech.videoplayer.pro" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="audio/x-mpegurl" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="false"
         android:name=".App"

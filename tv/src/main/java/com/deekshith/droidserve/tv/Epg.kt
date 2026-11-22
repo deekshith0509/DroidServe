@@ -58,14 +58,14 @@ object Epg {
         // different channels, so caching under the bare URL starves whichever opens second of its EPG.
         val key = guideUrl + "#" + wantedIds.sorted().hashCode()
         val now = System.currentTimeMillis()
-        lock.withLock { cache[key]?.let { (at, v) -> if (now - at < CACHE_TTL_MS) return v } }
+        lock.withLock { cache[key]?.let { (at, v) -> if (v != null && now - at < CACHE_TTL_MS) return v } }
         val parsed = withContext(Dispatchers.IO) {
             runCatching {
                 val text = fetch(guideUrl)
                 parse(text, wantedIds, MAX_PROGRAMMES)
             }.getOrNull()
         }
-        lock.withLock { cache[key] = now to parsed }
+        if (parsed != null) lock.withLock { cache[key] = now to parsed }
         return parsed
     }
 

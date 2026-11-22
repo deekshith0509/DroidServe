@@ -54,6 +54,9 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import com.deekshith.droidserve.tv.ConnectionState
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -390,6 +393,47 @@ fun Modifier.onMenuKey(enabled: Boolean = true, onMenu: () -> Unit): Modifier =
     this.onPreviewKeyEvent { e ->
         if (enabled && e.type == KeyEventType.KeyDown && e.key == Key.Menu) { onMenu(); true } else false
     }
+
+/**
+ * Shared empty/error/loading scaffold: guarantees a message + focusable action + BACK hint.
+ */
+@Composable
+fun StateScaffold(
+    icon: ImageVector = DsIcons.Info,
+    title: String,
+    detail: String? = null,
+    primaryAction: (() -> Unit)? = null,
+    primaryLabel: String = "Retry",
+    connection: ConnectionState? = null,
+    content: @Composable () -> Unit = {},
+) {
+    val first = remember { FocusRequester() }
+    Column(
+        Modifier.fillMaxSize().padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = DsColor.Amber, modifier = Modifier.size(48.dp))
+        Spacer(Modifier.height(12.dp))
+        Text(title, style = DsType.Section)
+        if (detail != null) {
+            Spacer(Modifier.height(6.dp))
+            Text(detail, style = DsType.Caption)
+        }
+        if (connection != null && connection != ConnectionState.Live) {
+            Spacer(Modifier.height(6.dp))
+            Text(connection.name, style = DsType.Caption, color = DsColor.Amber)
+        }
+        Spacer(Modifier.height(16.dp))
+        if (primaryAction != null) {
+            Button(onClick = primaryAction, modifier = Modifier.focusRequester(first).focusable()) {
+                Text(primaryLabel)
+            }
+        }
+        content()
+    }
+    LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
+}
 
 /** One row of a [ContextMenu]. */
 data class ContextAction(val label: String, val icon: ImageVector, val destructive: Boolean = false, val onClick: () -> Unit)
