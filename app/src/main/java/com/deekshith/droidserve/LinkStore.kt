@@ -133,12 +133,14 @@ object LinkStore {
         runCatching {
             if (!f.exists()) return@runCatching
             for (line in f.readLines()) {
-                val p = line.split('\t', limit = 11)
-                if (p.size >= 4) {
-                    fun col(i: Int) = p.getOrNull(i)?.ifEmpty { null }
-                    links.add(Link(p[1], p[2], p[3], p[0].toLongOrNull() ?: 0L, if (p.size >= 5) p[4] == "1" else true,
-                        col(5), col(6), col(7), col(8), col(9), col(10)))
-                    p[1].substringAfterLast('_').toLongOrNull()?.let { if (it >= counter) counter = it + 1 }
+                runCatching {
+                    val p = line.split('\t', limit = 11)
+                    if (p.size >= 4) {
+                        fun col(i: Int) = p.getOrNull(i)?.ifEmpty { null }
+                        links.add(Link(p[1], p[2], p[3], p[0].toLongOrNull() ?: 0L, if (p.size >= 5) p[4] == "1" else true,
+                            col(5), col(6), col(7), col(8), col(9), col(10)))
+                        p[1].substringAfterLast('_').toLongOrNull()?.let { if (it >= counter) counter = it + 1 }
+                    }
                 }
             }
         }

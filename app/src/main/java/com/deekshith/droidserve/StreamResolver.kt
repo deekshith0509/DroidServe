@@ -72,7 +72,7 @@ object StreamResolver {
                     else -> Outcome.Single(url, null, true)              // unknown type — let a player try
                 }
             } finally { conn.disconnect() }
-        } catch (_: Exception) { Outcome.Single(url, null, true) }       // probe failed — best-effort passthrough
+        } catch (_: Exception) { Outcome.Single(url, null, false) }      // probe failed — don't mark unverified HTML playable
     }
 
     /** Back-compat single-link resolver. A collection collapses to its (playable) playlist URL. */
@@ -94,20 +94,110 @@ object StreamResolver {
 
     /** Pure: pull the most likely direct media URL out of an HTML page. Null if none found. */
     fun extractMediaUrl(html: String, baseUrl: String): String? {
-        val patterns = listOf(
+        // Collect candidates in priority tiers; first non-empty tier wins.
+        val candidates = linkedSetOf<String>()
+        fun add(raw: String?) {
+            val t = raw?.trim().orEmpty()
+            if (t.isEmpty()) return
+            if (Regex("\\.(js|css)(\\?|$)", RegexOption.IGNORE_CASE).containsMatchIn(t)) return
+            candidates.add(absolutize(t, baseUrl))
+        }
+
+        // Tier 1: static tags
+        val tagPatterns = listOf(
             Regex("""<source\b[^>]*\bsrc=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
             Regex("""<video\b[^>]*\bsrc=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+            Regex("""<audio\b[^>]*\bsrc=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
             Regex("""<meta[^>]+(?:property|name)=["'](?:og:video(?::secure_url|:url)?|twitter:player:stream)["'][^>]+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
-            Regex("""["']?(?:file|source|src|videoUrl|hls)["']?\s*:\s*["'](https?[^"']+?\.(?:$MEDIA_EXT)[^"']*)["']""", RegexOption.IGNORE_CASE),
-            Regex("""(https?://[^"'<>\s\\]+\.(?:$MEDIA_EXT)(?:\?[^"'<>\s\\]*)?)""", RegexOption.IGNORE_CASE)
+            Regex("""<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:video(?::secure_url|:url)?|twitter:player:stream)["']""", RegexOption.IGNORE_CASE),
+            Regex("""<link[^>]+rel=["']preload["'][^>]+as=["']video["'][^>]+href=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+            Regex("""<link[^>]+href=["']([^"']+)["'][^>]+as=["']video["']""", RegexOption.IGNORE_CASE),
+            Regex("""<[^>]+type=["']application/vnd\.apple\.mpegurl["'][^>]*src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
         )
-        for (p in patterns) {
-            val raw = p.find(html)?.groupValues?.getOrNull(1)?.trim()
-            if (!raw.isNullOrEmpty() && !Regex("\\.(js|css)(\\?|$)", RegexOption.IGNORE_CASE).containsMatchIn(raw))
-                return absolutize(raw, baseUrl)
+        for (p in tagPatterns) for (m in p.findAll(html)) add(m.groupValues.getOrNull(1))
+
+        // Tier 2: JSON/JS literals
+        if (candidates.isEmpty()) {
+            val jsonPatterns = listOf(
+                Regex(""""(?:file|src|source|sources|hls|url|manifest|playlist|stream|m3u8|mpd)"\s*:\s*"([^"]+)"""", RegexOption.IGNORE_CASE),
+                Regex(""""(?:file|src|source|sources|hls|url|manifest|playlist|stream|m3u8|mpd)"\s*:\s*'([^']+)'""", RegexOption.IGNORE_CASE)
+            )
+            for (p in jsonPatterns) for (m in p.findAll(html)) add(m.groupValues.getOrNull(1))
+            // sources:[{file|src}]
+            Regex("""sources\s*:\s*\[\s*\{[^}]*?(?:file|src)\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                .findAll(html).forEach { add(it.groupValues.getOrNull(1)) }
+            // JSON-LD contentUrl
+            Regex(""""contentUrl"\s*:\s*"([^"]+)"""", RegexOption.IGNORE_CASE)
+                .findAll(html).forEach { add(it.groupValues.getOrNull(1)) }
         }
-        return null
+
+        // Tier 3: decode layer (unescape + base64 blobs + percent)
+        if (candidates.isEmpty()) {
+            val decoded = unescapeHtml(html)
+            for (p in tagPatterns + listOf(
+                Regex(""""(?:file|src|source|sources|hls|url|manifest|playlist|stream|m3u8|mpd)"\s*:\s*"([^"]+)"""", RegexOption.IGNORE_CASE)
+            )) for (m in p.findAll(decoded)) add(m.groupValues.getOrNull(1))
+            // base64 blobs
+            Regex("""[A-Za-z0-9+/]{24,}={0,2}""").findAll(html).forEach { m ->
+                val dec = base64Decode(m.value)
+                if (dec != null && dec.contains("http")) {
+                    // extract any media url from decoded
+                    Regex("""https?://[^"'<>\s]+""").findAll(dec).forEach { add(it.value) }
+                }
+            }
+            // atob("...")
+            Regex("""atob\(\s*["']([^"']+)["']\s*\)""", RegexOption.IGNORE_CASE).findAll(html).forEach { m ->
+                val dec = base64Decode(m.groupValues.getOrNull(1).orEmpty())
+                if (dec != null) Regex("""https?://[^"'<>\s]+""").findAll(dec).forEach { add(it.value) }
+            }
+        }
+
+        // Tier 4: manifest sniff (ranked)
+        if (candidates.isEmpty()) {
+            val sniff = Regex("""https?://[^"'<>\s\\]+\.(?:m3u8|mpd|ts|mp4|m4v|webm|mov|aac|mp3)(?:\?[^"'<>\s\\]*)?""", RegexOption.IGNORE_CASE)
+                .findAll(html).map { it.value }.toList()
+            // rank m3u8 > mpd > mp4 > other
+            val ranked = sniff.sortedBy { u ->
+                when {
+                    u.contains(".m3u8", true) -> 0
+                    u.contains(".mpd", true) -> 1
+                    u.contains(".mp4", true) -> 2
+                    else -> 3
+                }
+            }
+            ranked.forEach { add(it) }
+        }
+
+        if (candidates.isEmpty()) return null
+        // pick best by rank
+        return candidates.sortedBy { u ->
+            when {
+                u.contains(".m3u8", true) -> 0
+                u.contains(".mpd", true) -> 1
+                u.contains(".mp4", true) -> 2
+                else -> 3
+            }
+        }.first()
     }
+
+    private fun unescapeHtml(s: String): String {
+        var t = s.replace("\\/", "/")
+        // unicode escapes
+        t = Regex("""\\u([0-9a-fA-F]{4})""").replace(t) { m ->
+            m.groupValues[1].toInt(16).toChar().toString()
+        }
+        // html entities
+        t = t.replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'").replace("&lt;", "<").replace("&gt;", ">")
+        // percent
+        t = try { java.net.URLDecoder.decode(t, "UTF-8") } catch (_: Exception) { t }
+        return t
+    }
+
+    private fun base64Decode(s: String): String? = try {
+        val clean = s.trim()
+        val bytes = java.util.Base64.getDecoder().decode(clean)
+        String(bytes, Charsets.UTF_8)
+    } catch (_: Exception) { null }
 
     private fun extractTitle(html: String): String? {
         val t = Regex("""<title[^>]*>([^<]+)</title>""", RegexOption.IGNORE_CASE)

@@ -266,7 +266,8 @@ class HttpServer(
                     (java.net.URL(urlParam).openConnection() as java.net.HttpURLConnection).run {
                         connectTimeout = 8_000; readTimeout = 12_000
                         setRequestProperty("User-Agent", "Mozilla/5.0 DroidServe")
-                        inputStream.use { readCapped(it, options.importMaxBytes) }
+                        try { inputStream.use { readCapped(it, options.importMaxBytes) } }
+                        finally { disconnect() }
                     }
                 } catch (_: Exception) { return errJson(Response.Status.INTERNAL_ERROR, "Could not fetch playlist") }
             } else {
@@ -434,7 +435,8 @@ class HttpServer(
                         (java.net.URL(urlParam).openConnection() as java.net.HttpURLConnection).run {
                             connectTimeout = 8_000; readTimeout = 12_000
                             setRequestProperty("User-Agent", "Mozilla/5.0 DroidServe")
-                            inputStream.use { readCapped(it, options.importMaxBytes) }
+                            try { inputStream.use { readCapped(it, options.importMaxBytes) } }
+                            finally { disconnect() }
                         }
                     } catch (_: Exception) { return errJson(Response.Status.INTERNAL_ERROR, "Could not fetch playlist") }
                     val grp = LinkIngest.groupNameFor(urlParam)
@@ -470,7 +472,8 @@ class HttpServer(
                         (java.net.URL(urlParam).openConnection() as java.net.HttpURLConnection).run {
                             connectTimeout = 8_000; readTimeout = 12_000
                             setRequestProperty("User-Agent", "Mozilla/5.0 DroidServe")
-                            inputStream.use { readCapped(it, options.importMaxBytes) }
+                            try { inputStream.use { readCapped(it, options.importMaxBytes) } }
+                            finally { disconnect() }
                         }
                     } catch (_: Exception) {
                         return errJson(Response.Status.INTERNAL_ERROR, "Could not fetch playlist")
@@ -480,6 +483,7 @@ class HttpServer(
                     val sample = entries.take(3).map { it.title }
                     return cookie(jsonResponse(ApiJson.importPreview(entries.size, sample)))
                 }
+                else -> return errJson(Response.Status.BAD_REQUEST, "Unknown links endpoint")
             }
         }
 

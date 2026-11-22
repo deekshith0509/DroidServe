@@ -217,8 +217,11 @@ sealed interface UiScreen {
         val prevIndex: Int? = null,
         /** Non-null when these channels came from a named source (catalog bundle), enabling "Save to Home". */
         val title: String? = null,
+        /** Resolver state for the current channel (Idle/Resolving/Ready/Failed). */
+        val resolve: ResolveState = ResolveState.Idle,
     ) : UiScreen {
         val current: StreamLink get() = channels[index]
+        val canGuide: Boolean get() = channels.any { it.tvgUrl != null } || channels.any { it.tvgId != null }
     }
 
     /** The in-app iptv-org "Discover" catalog: browse Language/Country/Category bundles and load one. */
@@ -266,6 +269,11 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     // the servers so they're reachable without connecting to a phone.
     private val _screen = MutableStateFlow<UiScreen>(UiScreen.Discovery(savedPlaylists = saved.playlists(), savedChannels = saved.channels(), showAll = showAll))
     val screen: StateFlow<UiScreen> = _screen.asStateFlow()
+
+    private val _connection = MutableStateFlow(ConnectionState.Live)
+    val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
+
+    val vlcInstalled: Boolean get() = VlcLauncher.isInstalled(app)
 
     // One-shot events telling the Activity to fire an ACTION_VIEW intent (open in native player).
     private val _open = MutableSharedFlow<OpenRequest>(extraBufferCapacity = 4)
@@ -569,9 +577,23 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
      * chooser offers a browser (which runs the page's own JS player) instead of bouncing a player.
      */
     fun onLinkClick(link: StreamLink) {
-        // Web pages / magnets aren't streams — keep the external-chooser path (opens a browser / app).
-        if (!link.playable) { _open.tryEmit(OpenRequest(link.url, "", forceChooser = true)); return }
-        // A playable channel opens in the in-app player, flipping through the list it was clicked from.
+        if (!link.playable && !link.url.startsWith("http", true)) {
+            _open.tryEmit(OpenRequest(link.url, "", forceChooser = true)); return
+        }
+        if (!link.playable) {
+            // Resolve watch pages before in-app play.
+            viewModelScope.launch {
+                val resolved = StreamResolver.resolveForPlay(link)
+                if (resolved.playable) {
+                    val ctx = channelContext()
+                    val queue = if (ctx.any { it.id == link.id }) ctx else listOf(resolved)
+                    openChannelPlayer(queue, queue.indexOfFirst { it.id == resolved.id }.coerceAtLeast(0))
+                } else {
+                    _open.tryEmit(OpenRequest(link.url, "", forceChooser = true))
+                }
+            }
+            return
+        }
         val ctx = channelContext()
         val queue = if (ctx.any { it.id == link.id }) ctx else listOf(link)
         openChannelPlayer(queue, queue.indexOfFirst { it.id == link.id }.coerceAtLeast(0))
@@ -736,6 +758,21 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     fun openCurrentExternally() {
         val s = _screen.value as? UiScreen.ChannelPlayer ?: return
         _open.tryEmit(OpenRequest(s.current.url, mimeForUrl(s.current.url), forceChooser = true))
+    }
+
+    /** Play the current channel in VLC (resolves watch pages first, wraps in 1-entry m3u for headers). */
+    fun playCurrentInVlc() {
+        val s = _screen.value as? UiScreen.ChannelPlayer ?: return
+        viewModelScope.launch {
+            val resolved = StreamResolver.resolveForPlay(s.current)
+            VlcLauncher.launch(app, listOf(resolved))
+        }
+    }
+
+    /** Play all channels in VLC (exported as-is). */
+    fun playAllInVlc() {
+        val s = _screen.value as? UiScreen.ChannelPlayer ?: return
+        VlcLauncher.launch(app, s.channels)
     }
 
     /** Open the now/next TV guide for the current player's channels. */
