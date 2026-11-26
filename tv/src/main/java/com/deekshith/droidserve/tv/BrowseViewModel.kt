@@ -577,6 +577,21 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
      * chooser offers a browser (which runs the page's own JS player) instead of bouncing a player.
      */
     fun onLinkClick(link: StreamLink) {
+        // A link that was sent individually (not a channel of an auto-expanded m3u/IPTV playlist)
+        // is a standalone third-party stream — hand it to a dedicated external player (VLC/MX) via
+        // VlcLauncher so its per-channel UA/Referer survive the handoff. Only channels that came
+        // from a bulk playlist (group != null) play in the in-app Media3 player.
+        if (link.group == null) {
+            if (!link.playable && !link.url.startsWith("http", true)) {
+                _open.tryEmit(OpenRequest(link.url, "", forceChooser = true)); return
+            }
+            viewModelScope.launch {
+                val resolved = StreamResolver.resolveForPlay(getApplication(), link)
+                if (resolved.playable) VlcLauncher.launch(getApplication(), listOf(resolved))
+                else _open.tryEmit(OpenRequest(resolved.url, "", forceChooser = true))
+            }
+            return
+        }
         if (!link.playable && !link.url.startsWith("http", true)) {
             _open.tryEmit(OpenRequest(link.url, "", forceChooser = true)); return
         }
