@@ -282,6 +282,10 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     // One-shot events telling the Activity to launch the system package installer on a local APK.
     private val _install = MutableSharedFlow<java.io.File>(extraBufferCapacity = 2)
     val install: SharedFlow<java.io.File> = _install.asSharedFlow()
+
+    // One-shot user-facing status messages the Activity shows as a Toast.
+    private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val toast: SharedFlow<String> = _toast.asSharedFlow()
     private var lastApkFile: java.io.File? = null
 
     private var musicAlbums: List<MusicAlbum> = emptyList()
@@ -586,9 +590,12 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 _open.tryEmit(OpenRequest(link.url, "", forceChooser = true)); return
             }
             viewModelScope.launch {
+                if (!link.playable) _toast.tryEmit("Resolving stream…")
                 val resolved = StreamResolver.resolveForPlay(getApplication(), link)
-                if (resolved.playable) VlcLauncher.launch(getApplication(), listOf(resolved))
-                else _open.tryEmit(OpenRequest(resolved.url, "", forceChooser = true))
+                if (resolved.playable) {
+                    if (!VlcLauncher.launch(getApplication(), listOf(resolved)))
+                        _toast.tryEmit("No external player installed")
+                } else _open.tryEmit(OpenRequest(resolved.url, "", forceChooser = true))
             }
             return
         }

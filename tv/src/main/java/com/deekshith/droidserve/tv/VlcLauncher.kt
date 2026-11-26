@@ -16,8 +16,9 @@ object VlcLauncher {
         try { context.packageManager.getPackageInfo("org.videolan.vlc", 0); true }
         catch (_: Exception) { false }
 
-    fun launch(context: Context, channels: List<StreamLink>) {
-        if (channels.isEmpty()) return
+    /** Returns true if an external player was started (or the OS chooser shown), false if nothing could handle it. */
+    fun launch(context: Context, channels: List<StreamLink>): Boolean {
+        if (channels.isEmpty()) return false
         val dir = File(context.cacheDir, "vlc").apply { mkdirs() }
         val file = File(dir, "playlist_${System.currentTimeMillis()}.m3u")
         file.writeText(TvPlaylist.export(channels))
@@ -31,12 +32,12 @@ object VlcLauncher {
             try { context.packageManager.getPackageInfo(pkg, 0); true } catch (_: Exception) { false }
         }
         if (target != null) intent.setPackage(target)
-        try {
-            context.startActivity(intent)
+        return try {
+            context.startActivity(intent); true
         } catch (_: Exception) {
             try {
-                context.startActivity(Intent.createChooser(intent, "Open with"))
-            } catch (_: Exception) { }
+                context.startActivity(Intent.createChooser(intent, "Open with")); true
+            } catch (_: Exception) { false }
         }
     }
 }

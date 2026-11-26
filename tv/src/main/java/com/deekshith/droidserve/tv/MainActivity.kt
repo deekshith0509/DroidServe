@@ -68,6 +68,7 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch { vm.open.collect { req -> openInDefaultApp(req) } }
         lifecycleScope.launch { vm.install.collect { file -> installApk(file) } }
+        lifecycleScope.launch { vm.toast.collect { msg -> Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show() } }
 
         val reduceMotion = Settings.Global.getFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
 
