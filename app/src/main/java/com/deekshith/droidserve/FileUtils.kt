@@ -360,7 +360,7 @@ object FileUtils {
         fun sel(v: String) = if (v == overwritePolicy) " selected" else ""
         sb.append("""<style>
 .sb.up{border-color:var(--dl);color:var(--dl)}
-.updz{position:fixed;inset:0;z-index:300;background:rgba(14,165,233,.14);display:flex;align-items:center;justify-content:center;pointer-events:none;border:3px dashed var(--ac)}
+.updz{position:fixed;inset:0;z-index:300;background:rgba(14,165,233,.14);display:flex;align-items:center;justify-content:center;pointer-events:none;border:3px dashed var(--ac)}.updz[hidden]{display:none}
 .updz-in{background:var(--sf);border:1px solid var(--ac);color:var(--ac);padding:20px 28px;border-radius:14px;font-size:18px;font-weight:700;box-shadow:var(--sh)}
 .upq{position:fixed;right:12px;bottom:12px;z-index:320;width:min(360px,calc(100vw - 24px));background:var(--sf);border:1px solid var(--bd);border-radius:14px;box-shadow:var(--sh);overflow:hidden}
 .upq-h{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--bd);font-weight:700;font-size:14px}
