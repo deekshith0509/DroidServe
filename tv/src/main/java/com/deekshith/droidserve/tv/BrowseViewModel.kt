@@ -585,20 +585,9 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         // is a standalone third-party stream — hand it to a dedicated external player (VLC/MX) via
         // VlcLauncher so its per-channel UA/Referer survive the handoff. Only channels that came
         // from a bulk playlist (group != null) play in the in-app Media3 player.
-        if (link.group == null) {
-            if (!link.playable && !link.url.startsWith("http", true)) {
-                _open.tryEmit(OpenRequest(link.url, "", forceChooser = true)); return
-            }
-            viewModelScope.launch {
-                if (!link.playable) _toast.tryEmit("Resolving stream…")
-                val resolved = StreamResolver.resolveForPlay(getApplication(), link)
-                if (resolved.playable) {
-                    if (!VlcLauncher.launch(getApplication(), listOf(resolved)))
-                        _toast.tryEmit("No external player installed")
-                } else _open.tryEmit(OpenRequest(resolved.url, "", forceChooser = true))
-            }
-            return
-        }
+        // A link sent individually (not a channel of a bulk m3u/IPTV playlist) is a standalone
+        // third-party stream → always an external video player; group channels play in-app.
+        if (link.group == null) { playExternally(link); return }
         if (!link.playable && !link.url.startsWith("http", true)) {
             _open.tryEmit(OpenRequest(link.url, "", forceChooser = true)); return
         }
@@ -782,40 +771,52 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         cm.setPrimaryClip(android.content.ClipData.newPlainText("url", link.url))
     }
 
-    /** Open a streaming link in the system browser/chooser. */
-    fun openLinkExternally(link: StreamLink) {
-        _open.tryEmit(OpenRequest(link.url, "", forceChooser = true))
-    }
+    /** Open a streaming link in an external player (or chooser for non-http). */
+    fun openLinkExternally(link: StreamLink) = playExternally(link)
 
-    /** Hand the current channel to the OS default player chooser (VLC/MX/etc.) for codecs ExoPlayer can't do. */
+    /** Hand the current channel to an external player for codecs ExoPlayer can't handle. */
     fun openCurrentExternally() {
         val s = _screen.value as? UiScreen.ChannelPlayer ?: return
-        viewModelScope.launch {
-            val resolved = StreamResolver.resolveForPlay(getApplication(), s.current)
-            _open.tryEmit(OpenRequest(resolved.url, "", forceChooser = true))
-        }
+        playExternally(s.current)
     }
 
-    /** Play the current channel in VLC (resolves watch pages first, wraps in 1-entry m3u for headers). */
+    /** Explicit "open in VLC" from the player MENU — preferred path: m3u headers, then typed URL fallback. */
     fun playCurrentInVlc() {
         val s = _screen.value as? UiScreen.ChannelPlayer ?: return
-        viewModelScope.launch {
-            val resolved = StreamResolver.resolveForPlay(getApplication(), s.current)
-            VlcLauncher.launch(getApplication(), listOf(resolved))
-        }
+        playExternally(s.current)
     }
 
-    /** Play all channels in VLC (exported as-is). */
+    /** Play all channels in VLC (multi-channel m3u export — headers survive for every channel). */
     fun playAllInVlc() {
         val s = _screen.value as? UiScreen.ChannelPlayer ?: return
-        VlcLauncher.launch(getApplication(), s.channels)
+        viewModelScope.launch { VlcLauncher.launch(getApplication(), s.channels) }
     }
 
-    /** Play a streaming link in VLC (resolved + wrapped). */
-    fun playLinkInVlc(link: StreamLink) {
+    /** Play a streaming link from the Links/LinkGroup list in an external player. */
+    fun playLinkInVlc(link: StreamLink) = playExternally(link)
+
+    // Unified external-player handoff for a single streaming link.
+    // Strategy (most reliable to least):
+    //  1. VLC/MX installed or link has UA/Referer headers: wrap in 1-entry EXTVLCOPT m3u via
+    //     FileProvider and target the known player — headers survive the handoff.
+    //  2. (1) fails: emit a typed "video/*" ACTION_VIEW so the OS picks any installed video player.
+    //  3. No video handler: openInDefaultApp falls through to the OS chooser.
+    //  Non-http schemes (magnet/rtsp/etc.) go straight to the OS chooser.
+    private fun playExternally(link: StreamLink) {
+        if (!link.url.startsWith("http", true)) {
+            _open.tryEmit(OpenRequest(link.url, "", forceChooser = true)); return
+        }
         viewModelScope.launch {
+            if (!link.playable) _toast.tryEmit("Resolving stream…")
             val resolved = StreamResolver.resolveForPlay(getApplication(), link)
-            VlcLauncher.launch(getApplication(), listOf(resolved))
+            val hasHeaders = !resolved.userAgent.isNullOrBlank() || !resolved.referrer.isNullOrBlank()
+            val launched = if (hasHeaders || VlcLauncher.isInstalled(getApplication())) {
+                VlcLauncher.launch(getApplication(), listOf(resolved))
+            } else false
+            if (!launched) {
+                // Fallback: typed ACTION_VIEW — routes to any video player the device has.
+                _open.tryEmit(OpenRequest(resolved.url, "video/*", forceChooser = false))
+            }
         }
     }
 
