@@ -178,9 +178,12 @@ object FileUtils {
         title: String = "DroidServe",
         allowZip: Boolean = true,
         allowDownload: Boolean = true,
-        allowUpload: Boolean = true,
         serverFacts: List<Pair<String, String>> = emptyList(),
-        authToken: String? = null
+        authToken: String? = null,
+        allowUploads: Boolean = false,
+        csrfToken: String? = null,
+        maxUploadBytes: Long = 0L,
+        overwritePolicy: String = "suffix"
     ): String {
         val sb = StringBuilder(4096 + entries.size * 256)
         val safeTitle = escHtml(title.ifBlank { "DroidServe" })
@@ -203,20 +206,25 @@ object FileUtils {
         // Toolbar: current-folder ZIP + sort controls
         sb.append("""<div class="tb"><span class="st" id="st"></span>""")
         sb.append("""<button class="sb" id="viewtg" title="Grid / list view" aria-label="Toggle grid or list view">⊞ Grid</button>""")
+        if (allowUploads) {
+            sb.append("""<button class="sb up" id="upbtn" title="Upload files to this folder" aria-label="Upload files">⬆ Upload</button>""")
+            sb.append("""<button class="sb up" id="upfolderbtn" title="Upload a whole folder here" aria-label="Upload folder">⬆ Folder</button>""")
+        }
         if (allowZip) {
             val here = encodePath(urlPath)
             val zipHref = if (here.isEmpty()) "/?zip=1" else "/$here?zip=1"
             sb.append("""<a class="sb zipall" href="""").append(zipHref).append(tokAmp)
             sb.append("""" aria-label="Download this folder as ZIP">⬇ Folder ZIP</a>""")
         }
-        if (allowUpload) {
-            sb.append("""<label class="sb" style="cursor:pointer" aria-label="Upload files to this folder">⬆ Upload<input type="file" id="upf" multiple style="display:none"></label>""")
-        }
         sb.append("""<button class="sb on" data-s="d">Default</button>""")
         sb.append("""<button class="sb" data-s="n">Name</button>""")
         sb.append("""<button class="sb" data-s="s">Size ↓</button>""")
         sb.append("""<button class="sb" data-s="t">Date ↓</button>""")
         sb.append("</div>")   // close .tb
+
+        // Upload affordances (only when the server allows writes). Drag-drop is wired to the
+        // whole listing; these inputs + the queue panel are the explicit controls.
+        if (allowUploads) emitUploadUi(sb, overwritePolicy, urlPath)
 
         // Parent link — OUTSIDE the sortable list so it stays pinned at the top
         // and is never reordered/hidden by sorting or filtering.
@@ -340,8 +348,148 @@ object FileUtils {
         sb.append("Generated ").append(escHtml(formatDate(System.currentTimeMillis())))
         sb.append("</div>")
 
+        if (allowUploads) emitUploadScript(sb, urlPath, csrfToken ?: "", maxUploadBytes, overwritePolicy)
+
         sb.append(HTML_TAIL)
         return sb.toString()
+    }
+
+    // Upload UI: styles, hidden file/folder inputs, drag-drop overlay, queue panel (with an
+    // overwrite-policy selector), and a no-JS multipart <form> fallback inside <noscript>.
+    private fun emitUploadUi(sb: StringBuilder, overwritePolicy: String, urlPath: String) {
+        fun sel(v: String) = if (v == overwritePolicy) " selected" else ""
+        sb.append("""<style>
+.sb.up{border-color:var(--dl);color:var(--dl)}
+.updz{position:fixed;inset:0;z-index:300;background:rgba(14,165,233,.14);display:flex;align-items:center;justify-content:center;pointer-events:none;border:3px dashed var(--ac)}
+.updz-in{background:var(--sf);border:1px solid var(--ac);color:var(--ac);padding:20px 28px;border-radius:14px;font-size:18px;font-weight:700;box-shadow:var(--sh)}
+.upq{position:fixed;right:12px;bottom:12px;z-index:320;width:min(360px,calc(100vw - 24px));background:var(--sf);border:1px solid var(--bd);border-radius:14px;box-shadow:var(--sh);overflow:hidden}
+.upq-h{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--bd);font-weight:700;font-size:14px}
+.upq-h .gro{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upovr{background:var(--sf2);color:var(--tx);border:1px solid var(--bd);border-radius:6px;font-size:11px;padding:2px}
+.upq-x{background:none;border:none;color:var(--mu);font-size:16px;cursor:pointer;line-height:1}
+.upq-l{max-height:40vh;overflow:auto}
+.upi{padding:8px 12px;border-bottom:1px solid var(--bd);font-size:13px}
+.upi:last-child{border-bottom:none}
+.upi .nm{display:flex;gap:6px;align-items:center}
+.upi .nm .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upi .st{color:var(--mu);font-size:11px;white-space:nowrap}
+.upi .bar{height:6px;background:var(--sf2);border-radius:4px;overflow:hidden;margin-top:5px}
+.upi .bar>i{display:block;height:100%;width:0;background:var(--dl);transition:width .15s}
+.upi.err .bar>i{background:#ef4444}
+.upi .rt{background:none;border:1px solid var(--bd);color:var(--ac);border-radius:6px;font-size:11px;padding:1px 6px;cursor:pointer}
+.noscript-up{margin:8px 0;padding:10px;border:1px dashed var(--bd);border-radius:10px;color:var(--mu);font-size:13px}
+</style>""")
+        sb.append("""<input id="upfile" type="file" multiple hidden>""")
+        sb.append("""<input id="updir" type="file" hidden>""")
+        sb.append("""<div id="updz" class="updz" hidden><div class="updz-in">⬆ Drop files to upload here</div></div>""")
+        sb.append("""<div id="upq" class="upq" hidden><div class="upq-h"><span class="gro" id="upq-t">Uploads</span>""")
+        sb.append("""<select id="upovr" class="upovr" title="If a file with the same name already exists">""")
+        sb.append("""<option value="suffix"""").append(sel("suffix")).append(""">Keep both</option>""")
+        sb.append("""<option value="overwrite"""").append(sel("overwrite")).append(""">Overwrite</option>""")
+        sb.append("""<option value="reject"""").append(sel("reject")).append(""">Skip existing</option></select>""")
+        sb.append("""<button class="upq-x" id="upq-x" title="Hide">✕</button></div><div class="upq-l" id="upq-l"></div></div>""")
+        // JS-off fallback: a classic multipart form posting into this folder.
+        val dirParam = encodePath(urlPath)
+        sb.append("""<noscript><form class="noscript-up" method="post" enctype="multipart/form-data" action="/api/upload?dir=""")
+            .append(dirParam)
+            .append("""">Upload without JavaScript: <input type="file" name="f" required> <button type="submit">Upload</button></form></noscript>""")
+    }
+
+    // Upload client. Vanilla JS (no template literals / '$' so it nests cleanly in a Kotlin raw
+    // string): small files stream as one raw PUT; large files (>=256 MB) use resumable tus-style
+    // chunks with HEAD-based resume on retry. Per-file progress, throughput, and retry/resume.
+    private fun emitUploadScript(sb: StringBuilder, urlPath: String, csrf: String, maxBytes: Long, overwritePolicy: String) {
+        sb.append("<script>\n(function(){\n")
+        sb.append("var CFG={dir:\"").append(jsonStr(urlPath))
+            .append("\",csrf:\"").append(jsonStr(csrf))
+            .append("\",max:").append(maxBytes)
+            .append(",ovr:\"").append(jsonStr(overwritePolicy))
+            .append("\",tus:268435456,chunk:16777216};\n")
+        sb.append("""var upfile=document.getElementById('upfile'),updir=document.getElementById('updir');
+var dz=document.getElementById('updz'),q=document.getElementById('upq'),ql=document.getElementById('upq-l'),qt=document.getElementById('upq-t');
+try{updir.webkitdirectory=true;}catch(e){}
+var items=[],active=0,MAXC=3,seq=0;
+function enc(p){return p.split('/').filter(function(s){return s.length;}).map(encodeURIComponent).join('/');}
+function fmt(b){if(b<1024)return b+' B';if(b<1048576)return (b/1024).toFixed(0)+' KB';if(b<1073741824)return (b/1048576).toFixed(1)+' MB';return (b/1073741824).toFixed(2)+' GB';}
+function joinDir(a,b){var p=a||'';if(b){p=p?(p+'/'+b):b;}return p;}
+function basen(p){var i=p.lastIndexOf('/');return i<0?p:p.substring(i+1);}
+function dirn(p){var i=p.lastIndexOf('/');return i<0?'':p.substring(0,i);}
+function render(){
+  var pend=items.filter(function(it){return it.state!='done'&&it.state!='err';}).length;
+  qt.textContent=pend?('Uploading '+pend+'…'):'Uploads complete';
+  ql.innerHTML='';
+  items.forEach(function(it){
+    var d=document.createElement('div');d.className='upi'+(it.state=='err'?' err':'');
+    var st=it.state=='done'?('✓ '+fmt(it.total)):it.state=='err'?('Failed — '+(it.msg||'')):it.state=='up'?(Math.round(it.pct||0)+'% · '+(it.rate||'')):'queued';
+    d.innerHTML='<div class="nm"><span class="t"></span><span class="st"></span></div><div class="bar"><i></i></div>';
+    d.querySelector('.t').textContent=it.rel;
+    d.querySelector('.st').textContent=st;
+    d.querySelector('.bar>i').style.width=(it.pct||0)+'%';
+    if(it.state=='err'){var b=document.createElement('button');b.className='rt';b.textContent='Retry';b.onclick=function(){it.state='queue';it.pct=0;pump();};d.querySelector('.nm').appendChild(b);}
+    ql.appendChild(d);
+  });
+}
+function addFiles(list,useRel){
+  for(var i=0;i<list.length;i++){var f=list[i];
+    var rel=(useRel&&f.webkitRelativePath)?f.webkitRelativePath:f.name;
+    if(CFG.max>0&&f.size>CFG.max){items.push({rel:rel,total:f.size,pct:0,state:'err',msg:'too large'});continue;}
+    items.push({id:++seq,file:f,rel:rel,total:f.size,pct:0,state:'queue',rate:''});
+  }
+  q.hidden=false;render();pump();
+}
+function pump(){
+  while(active<MAXC){
+    var it=items.find(function(x){return x.state=='queue';});
+    if(!it)break;active++;it.state='up';it.t0=Date.now();
+    uploadOne(it).then(function(){active--;pump();render();},function(){active--;pump();render();});
+  }
+  render();
+}
+function prog(it,loaded){it.pct=it.total?(loaded*100/it.total):100;var dt=(Date.now()-it.t0)/1000;if(dt>0.3)it.rate=fmt(loaded/dt)+'/s';render();}
+function uploadOne(it){var full=joinDir(CFG.dir,it.rel);return it.total<CFG.tus?putUp(it,full):tusUp(it,full);}
+function putUp(it,full){return new Promise(function(res,rej){
+  var xhr=new XMLHttpRequest();xhr.open('PUT','/api/upload/'+enc(full));
+  xhr.setRequestHeader('X-Droidserve-CSRF',CFG.csrf);xhr.setRequestHeader('X-Upload-Overwrite',CFG.ovr);
+  xhr.upload.onprogress=function(e){if(e.lengthComputable)prog(it,e.loaded);};
+  xhr.onload=function(){if(xhr.status>=200&&xhr.status<300){it.state='done';it.pct=100;res();}else{it.state='err';it.msg='HTTP '+xhr.status;rej();}};
+  xhr.onerror=function(){it.state='err';it.msg='network';rej();};
+  xhr.send(it.file);});}
+function tusUp(it,full){
+  var name=basen(full),dir=dirn(full);
+  var mk=it.url?Promise.resolve(it.url):fetch('/api/upload',{method:'POST',headers:{'X-Droidserve-CSRF':CFG.csrf,'X-Upload-Overwrite':CFG.ovr,'Tus-Resumable':'1.0.0','Upload-Length':String(it.total),'X-Upload-Name':encodeURIComponent(name),'X-Upload-Dir':encodeURIComponent(dir)}}).then(function(r){if(r.status!=201)throw 0;it.url=r.headers.get('Location');return it.url;});
+  return mk.then(function(url){return fetch(url,{method:'HEAD',headers:{'X-Droidserve-CSRF':CFG.csrf,'Tus-Resumable':'1.0.0'}}).then(function(r){return parseInt(r.headers.get('Upload-Offset')||'0',10);}).then(function(off){return chunks(it,url,off);});})
+    .then(function(){it.state='done';it.pct=100;},function(){it.state='err';it.msg=it.msg||'failed';throw 0;});
+}
+function chunks(it,url,offset){
+  if(offset>=it.total)return Promise.resolve();
+  var end=Math.min(offset+CFG.chunk,it.total),blob=it.file.slice(offset,end);
+  return new Promise(function(res,rej){
+    var xhr=new XMLHttpRequest();xhr.open('PATCH',url);
+    xhr.setRequestHeader('X-Droidserve-CSRF',CFG.csrf);xhr.setRequestHeader('Tus-Resumable','1.0.0');
+    xhr.setRequestHeader('Upload-Offset',String(offset));xhr.setRequestHeader('Content-Type','application/offset+octet-stream');
+    xhr.upload.onprogress=function(e){if(e.lengthComputable)prog(it,offset+e.loaded);};
+    xhr.onload=function(){
+      if(xhr.status==409){var ro=parseInt(xhr.getResponseHeader('Upload-Offset')||'0',10);chunks(it,url,ro).then(res,rej);return;}
+      if(xhr.status>=200&&xhr.status<300){var no=parseInt(xhr.getResponseHeader('Upload-Offset')||String(end),10);prog(it,no);chunks(it,url,no).then(res,rej);}
+      else{it.msg='HTTP '+xhr.status;rej();}
+    };
+    xhr.onerror=function(){it.msg='network';rej();};
+    xhr.send(blob);
+  });
+}
+document.getElementById('upbtn').onclick=function(){upfile.click();};
+document.getElementById('upfolderbtn').onclick=function(){updir.click();};
+upfile.onchange=function(){addFiles(upfile.files,false);upfile.value='';};
+updir.onchange=function(){addFiles(updir.files,true);updir.value='';};
+document.getElementById('upq-x').onclick=function(){q.hidden=true;};
+document.getElementById('upovr').onchange=function(){CFG.ovr=this.value;};
+var dc=0;
+window.addEventListener('dragenter',function(e){if(e.dataTransfer&&Array.prototype.indexOf.call(e.dataTransfer.types,'Files')>=0){dc++;dz.hidden=false;}});
+window.addEventListener('dragover',function(e){e.preventDefault();});
+window.addEventListener('dragleave',function(){dc--;if(dc<=0){dc=0;dz.hidden=true;}});
+window.addEventListener('drop',function(e){e.preventDefault();dc=0;dz.hidden=true;if(e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files.length)addFiles(e.dataTransfer.files,false);});
+})();
+</script>""")
     }
 
     private val DATE_FMT = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
@@ -1185,21 +1333,6 @@ fetch('/api/links/poll?since='+ver,{credentials:'same-origin'}).then(function(r)
 .then(function(d){if(d&&open)render(d);if(open)loop();else polling=false;})
 .catch(function(){if(open)setTimeout(loop,2000);else polling=false;});
 })();}
-})();
-</script>
-<script>
-(function(){
-  var upf=document.getElementById('upf');
-  if(!upf)return;
-  upf.addEventListener('change',function(){
-    var files=Array.from(upf.files||[]); if(!files.length)return;
-    var dir=''; try{dir=decodeURIComponent(location.pathname.replace(/^\\/+|\\/+$/g,''));}catch(e){dir=location.pathname.replace(/^\\/+|\\/+$/g,'');}
-    files.forEach(function(f){
-      fetch('/api/upload?name='+encodeURIComponent(f.name)+'&dir='+encodeURIComponent(dir),{method:'POST',credentials:'same-origin',body:f})
-        .then(function(){location.reload();}).catch(function(){});
-    });
-    upf.value='';
-  });
 })();
 </script></body></html>"""
 }

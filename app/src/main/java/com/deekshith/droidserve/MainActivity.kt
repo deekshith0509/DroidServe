@@ -113,6 +113,7 @@ fun DroidServeApp() {
     var showHidden    by remember { mutableStateOf(prefs.getBoolean(ServerForegroundService.KEY_SHOW_HIDDEN, false)) }
     var allowZip      by remember { mutableStateOf(prefs.getBoolean(ServerForegroundService.KEY_ALLOW_ZIP, true)) }
     var allowDownload by remember { mutableStateOf(prefs.getBoolean(ServerForegroundService.KEY_ALLOW_DL, true)) }
+    var allowUploads  by remember { mutableStateOf(prefs.getBoolean(ServerForegroundService.KEY_ALLOW_UPLOADS, false)) }
     var keepAwake     by remember { mutableStateOf(prefs.getBoolean(ServerForegroundService.KEY_KEEP_AWAKE, true)) }
     var autoStopMin   by remember { mutableStateOf(prefs.getInt(ServerForegroundService.KEY_AUTO_STOP, 0)) }
     var autoStart     by remember { mutableStateOf(prefs.getBoolean(KEY_AUTO_START, false)) }
@@ -136,7 +137,7 @@ fun DroidServeApp() {
         startServer(
             context, uri, portInt,
             password.ifBlank { null }, username.ifBlank { null },
-            showHidden, allowZip, allowDownload, title.ifBlank { "DroidServe" },
+            showHidden, allowZip, allowDownload, allowUploads, title.ifBlank { "DroidServe" },
             keepAwake, autoStopMin
         )
     }
@@ -344,6 +345,9 @@ fun DroidServeApp() {
                 }
                 OptionSwitch("Allow file downloads", "Off = preview/stream only", allowDownload, !isRunning) {
                     allowDownload = it; savePrefs { putBoolean(ServerForegroundService.KEY_ALLOW_DL, it) }
+                }
+                OptionSwitch("Allow uploads", "Let browsers upload files into the shared folder", allowUploads, !isRunning) {
+                    allowUploads = it; savePrefs { putBoolean(ServerForegroundService.KEY_ALLOW_UPLOADS, it) }
                 }
                 OptionSwitch("Keep screen awake", "Hold CPU/Wi-Fi locks while serving", keepAwake, !isRunning) {
                     keepAwake = it; savePrefs { putBoolean(ServerForegroundService.KEY_KEEP_AWAKE, it) }
@@ -640,7 +644,7 @@ private fun SendToTvCard(isRunning: Boolean, snackbar: SnackbarHostState, scope:
 private fun startServer(
     context: Context, uri: Uri, port: Int,
     password: String?, username: String?, showHidden: Boolean,
-    allowZip: Boolean, allowDownload: Boolean, title: String,
+    allowZip: Boolean, allowDownload: Boolean, allowUploads: Boolean, title: String,
     keepAwake: Boolean, autoStopMin: Int
 ) {
     val intent = Intent(context, ServerForegroundService::class.java).apply {
@@ -652,6 +656,7 @@ private fun startServer(
         putExtra(ServerForegroundService.EXTRA_SHOW_HIDDEN, showHidden)
         putExtra(ServerForegroundService.EXTRA_ALLOW_ZIP, allowZip)
         putExtra(ServerForegroundService.EXTRA_ALLOW_DL, allowDownload)
+        putExtra(ServerForegroundService.EXTRA_ALLOW_UPLOADS, allowUploads)
         putExtra(ServerForegroundService.EXTRA_TITLE, title)
         putExtra(ServerForegroundService.EXTRA_KEEP_AWAKE, keepAwake)
         putExtra(ServerForegroundService.EXTRA_AUTO_STOP_MIN, autoStopMin)

@@ -20,6 +20,7 @@ import java.io.*
 import java.util.Collections
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.zip.CRC32
 
 // ============================================================================
 // FileEntry — lightweight SAF record (avoids DocumentFile per-file IPC)
@@ -91,12 +92,14 @@ data class ServerOptions(
     val showHidden: Boolean = false,   // list/serve dotfiles & __system entries
     val allowZip: Boolean = true,      // expose ?zip=1 folder downloads
     val allowDownload: Boolean = true, // expose forced (?dl=1) file downloads
-    val allowUpload: Boolean = true,   // allow receiving files via upload
-    val uploadMaxBytes: Int = 1024 * 1024 * 1024, // 1 GB per upload
     val title: String = "DroidServe", // shown in the web UI header / tab
     // Playlist import limits — cap body/URL fetch size and max entries per batch.
     val importMaxBytes: Int = 64 * 1024 * 1024, // 64 MB body guard (OOM/DoS only; any real playlist fits)
-    val importMaxEntries: Int = Int.MAX_VALUE   // no entry cap
+    val importMaxEntries: Int = Int.MAX_VALUE,  // no entry cap
+    // ── Uploads (browser → phone). The server is read-only unless this is on. ──
+    val allowUploads: Boolean = false,          // master gate; off = write routes 404 and UI hides the affordance
+    val maxUploadBytes: Long = 0L,              // 0 = unbounded; else per-file cap (declared length rejected early)
+    val overwritePolicy: OverwritePolicy = OverwritePolicy.SUFFIX
 )
 
 // ============================================================================
@@ -149,6 +152,35 @@ class HttpServer(
         java.security.SecureRandom().nextBytes(bytes)
         Base64.encodeToString(bytes, Base64.NO_WRAP or Base64.URL_SAFE)
     }
+
+    // Per-server CSRF token. Unlike the session cookie (HttpOnly, so unreadable by JS) this is
+    // embedded directly in the served page so the upload JS can echo it back in X-Droidserve-CSRF
+    // on every mutating request. A cross-origin page cannot read our page body, so it cannot learn
+    // the token — that + an Origin match is what stops a remote site from driving the user's
+    // browser into writing to this LAN server. Only relevant for cookie-auth / open-mode writes;
+    // Basic-auth / ?tok= requests carry a non-ambient credential and are intrinsically CSRF-immune.
+    private val csrfToken: String = run {
+        val bytes = ByteArray(18)
+        java.security.SecureRandom().nextBytes(bytes)
+        Base64.encodeToString(bytes, Base64.NO_WRAP or Base64.URL_SAFE)
+    }
+
+    // Resumable (tus-style) upload sessions, keyed by a random id. Maps an id to the target
+    // folder + final name + the `.part` file receiving bytes. Offset is never stored — it is
+    // always the current `.part` length (no bookkeeping to corrupt). Lost on process death; the
+    // orphaned `.part` is then reaped by the sweeper, and the client simply re-creates.
+    private class Upload(
+        val parentDocId: String,
+        val finalName: String,
+        val partUri: Uri,
+        val declaredLength: Long,
+        val overwrite: OverwritePolicy,
+        @Volatile var lastActivity: Long
+    ) { val lock = Any() }   // single-writer per upload id
+
+    private val uploads = ConcurrentHashMap<String, Upload>()
+    private val uploadIdSeq = java.security.SecureRandom()
+    private val UPLOAD_IDLE_TTL_MS = 60L * 60L * 1000L   // reap resumable sessions idle > 1h
 
     private val threadIndex = AtomicInteger(0)
 
@@ -219,6 +251,9 @@ class HttpServer(
         super.stop()
         DirectoryCache.clear()
         CastQueue.clear()
+        // Drop any in-flight resumable uploads and delete their orphaned .part scratch files.
+        uploads.values.forEach { deleteDoc(it.partUri) }
+        uploads.clear()
         // Interrupt any in-flight ZIP producers so they stop reading SAF and release the pipe.
         synchronized(zipThreads) { zipThreads.toList() }.forEach { it.interrupt() }
         executor.shutdown()
@@ -250,7 +285,14 @@ class HttpServer(
         if (method == Method.OPTIONS)
             return newFixedLengthResponse(Response.Status.OK, "text/plain", "").also {
                 cors(it); it.addHeader("Access-Control-Max-Age", "86400")
+                if (options.allowUploads) tusDiscovery(it)
             }
+
+        // ── Uploads (browser → phone): the only mutating routes (PUT/POST/PATCH/HEAD/DELETE on
+        // /api/upload*). Handled here, before the GET/HEAD guard below which would otherwise 405
+        // them. Does its own allowUploads + auth + CSRF/Origin gating.
+        if (session.uri.trimStart('/').startsWith("api/upload"))
+            return handleUpload(session)
 
         // POST /api/links/import — bulk M3U import (raw body text or ?url= server-side fetch).
         // Handled here, before the GET/HEAD guard, because NanoHTTPD's dispatcher otherwise 405s it.
@@ -287,16 +329,6 @@ class HttpServer(
             return ck(jsonResponse(ApiJson.importResult(v, list, kept.size, parsed.size - kept.size)))
         }
 
-        // POST/PUT upload — receive a file into the current (or specified) folder.
-        if (method == Method.PUT || (method == Method.POST && isUploadRequest(session))) {
-            if (!checkAuth(session)) return unauthorized()
-            val nc = authNeeded() && !hasValidCookie(session)
-            fun ck(r: Response) = r.also {
-                if (nc) it.addHeader("Set-Cookie", "$COOKIE_NAME=$sessionToken; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly")
-            }
-            ServerStateHolder.incrementRequests()
-            return ck(handleUpload(session))
-        }
         if (method != Method.GET && method != Method.HEAD)
             return errJson(Response.Status.METHOD_NOT_ALLOWED, "Method not allowed")
 
@@ -617,6 +649,8 @@ class HttpServer(
                 while (c.moveToNext()) {
                     val name = c.getString(nameIdx) ?: continue
                     if (!options.showHidden && FileUtils.isHiddenOrSystem(name)) continue
+                    // In-progress / orphaned upload scratch files are hidden (shown with hidden files).
+                    if (!options.showHidden && name.endsWith(UploadLogic.PART_SUFFIX)) continue
                     val docId    = c.getString(idIdx) ?: continue
                     // Guard mimeIdx like the other optional columns — getString(-1) would throw
                     // and abort the whole listing if a provider omits the MIME column.
@@ -691,10 +725,14 @@ class HttpServer(
             Response.Status.OK, "text/html; charset=utf-8",
             FileUtils.buildHtml(
                 entries, urlPath, dirName,
-                options.title, options.allowZip, options.allowDownload, options.allowUpload, serverFacts(),
+                options.title, options.allowZip, options.allowDownload, serverFacts(),
                 // Only embed the token in links when auth is enforced; external players
                 // (VLC/MX) carry it in the URL since they send no cookie/Basic header.
-                authToken = if (authNeeded()) sessionToken else null
+                authToken = if (authNeeded()) sessionToken else null,
+                allowUploads = options.allowUploads,
+                csrfToken = if (options.allowUploads) csrfToken else null,
+                maxUploadBytes = options.maxUploadBytes,
+                overwritePolicy = options.overwritePolicy.name.lowercase()
             )
         ).also { cors(it); it.addHeader("Cache-Control", "no-store") }
 
@@ -1147,160 +1185,366 @@ class HttpServer(
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Upload — receive files into a SAF folder (POST raw/multipart or PUT)
-    // -----------------------------------------------------------------------
-    private fun isUploadRequest(session: IHTTPSession): Boolean {
-        val path = session.uri.trimStart('/')
-        if (path == "api/upload" || path == "upload" ||
-            path.startsWith("api/upload/") || path.startsWith("upload/")) return true
-        if (session.parameters["upload"]?.firstOrNull() == "1") return true
-        if (!session.parameters["name"].isNullOrEmpty()) return true
-        if (!session.parameters["filename"].isNullOrEmpty()) return true
-        val ct = session.headers["content-type"] ?: ""
-        if (ct.contains("multipart/form-data", ignoreCase = true)) return true
-        if (ct.contains("application/octet-stream", ignoreCase = true)) return true
-        val last = path.substringAfterLast('/')
-        val declared = session.headers["content-length"]?.toLongOrNull() ?: 0L
-        if (last.contains('.') && declared > 0) return true
-        return false
+    // =======================================================================
+    // Uploads (browser → phone) — the server's only mutating surface.
+    //
+    // Transports:
+    //   PUT   /api/upload/<dir>/<name>   one shot, raw streaming body        (small/many files)
+    //   POST  /api/upload                tus-style resumable create → id     (large files)
+    //   HEAD  /api/upload/tus/<id>       resume offset = current .part length
+    //   PATCH /api/upload/tus/<id>       append a chunk at Upload-Offset
+    //   DELETE/api/upload/tus/<id>       cancel + reap the .part
+    //   POST  /api/upload  (multipart)   no-JS <form> fallback
+    //
+    // Every byte streams straight into a `<rand>.part` SAF file with O(1) memory, bounded by the
+    // declared length; the file only becomes visible under its real name via an atomic rename
+    // after the full length (and optional CRC32) verifies. A crash leaves only a reapable .part.
+    // =======================================================================
+    private fun handleUpload(session: IHTTPSession): Response {
+        if (!options.allowUploads) return errJson(Response.Status.NOT_FOUND, "Not found")  // hide the endpoint
+        if (session.uri.any { it < ' ' }) return errJson(Response.Status.FORBIDDEN, "Forbidden")
+        if (!checkAuth(session)) return unauthorized()
+        if (!csrfOk(session)) return errJson(Response.Status.FORBIDDEN, "CSRF/Origin check failed")
+
+        ServerStateHolder.incrementRequests()
+        reapStaleUploads()
+
+        val method = session.method
+        val sub = session.uri.trimStart('/').removePrefix("api/upload").trimStart('/')
+        val resp = try {
+            when {
+                sub.startsWith("tus/") -> {
+                    val id = sub.removePrefix("tus/")
+                    when (method) {
+                        Method.HEAD   -> tusHead(id)
+                        Method.PATCH  -> tusPatch(session, id)
+                        Method.DELETE -> tusDelete(id)
+                        else          -> errJson(Response.Status.METHOD_NOT_ALLOWED, "Method not allowed")
+                    }
+                }
+                sub.isEmpty() && method == Method.POST -> {
+                    val ctype = (session.headers["content-type"] ?: "").lowercase()
+                    if (ctype.startsWith("multipart/form-data")) multipartUpload(session)
+                    else tusCreate(session)
+                }
+                method == Method.PUT && sub.isNotEmpty() -> putUpload(session, sub)
+                else -> errJson(Response.Status.METHOD_NOT_ALLOWED, "Method not allowed")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "upload error: ${session.uri}", e)
+            errJson(Response.Status.INTERNAL_ERROR, "Upload failed")
+        }
+        // Several reject paths (413 pre-flight, 409 offset mismatch, bad filename/folder) return
+        // without draining the request body. Leaving undrained bytes on a keep-alive socket would
+        // desync the next request on it, so force the connection closed on any non-2xx upload reply.
+        if (resp.status.requestStatus !in 200..299) resp.setKeepAlive(false)
+        return resp
     }
 
-    private fun handleUpload(session: IHTTPSession): Response {
-        val uriPath = session.uri.trimStart('/')
-        if (uriPath.any { it < ' ' } || uriPath.split('/').any { it == ".." })
-            return errJson(Response.Status.FORBIDDEN, "Forbidden")
+    // Credential-bearing (non-ambient) requests — Basic header or ?tok= — cannot be forged by a
+    // cross-origin page, so they are intrinsically CSRF-safe. Cookie-auth and open-mode writes are
+    // ambient, so they must prove same-origin (Origin/Referer == Host) AND echo the page's CSRF token.
+    private fun csrfOk(session: IHTTPSession): Boolean {
+        val authHeader = session.headers["authorization"]
+        if (!authHeader.isNullOrBlank()) return true
+        if (hasValidTokenParam(session)) return true
+        val origin = session.headers["origin"] ?: session.headers["referer"]
+        if (!UploadLogic.originHostMatches(origin, session.headers["host"])) return false
+        val tok = session.headers["x-droidserve-csrf"] ?: return false
+        return constantTimeEquals(tok.toByteArray(Charsets.UTF_8), csrfToken.toByteArray(Charsets.UTF_8))
+    }
 
-        val contentLength = session.headers["content-length"]?.toLongOrNull() ?: -1L
-        val maxBytes = minOf(options.importMaxBytes, options.uploadMaxBytes).toLong()
-        if (contentLength > maxBytes) return errJson(Response.Status.PAYLOAD_TOO_LARGE, "File too large")
+    // ── Tier A: one-shot raw streaming PUT ────────────────────────────────────
+    private fun putUpload(session: IHTTPSession, relPath: String): Response {
+        val segs = relPath.split('/').filter { it.isNotEmpty() }
+        if (segs.isEmpty()) return errJson(Response.Status.BAD_REQUEST, "Missing target path")
+        val name = UploadLogic.sanitizeFilename(segs.last())
+            ?: return errJson(Response.Status.BAD_REQUEST, "Invalid filename")
+        val declared = session.headers["content-length"]?.toLongOrNull()
+            ?: return errJson(Response.Status.LENGTH_REQUIRED, "Content-Length required")
+        if (declared < 0) return errJson(Response.Status.BAD_REQUEST, "Bad length")
+        if (options.maxUploadBytes > 0 && declared > options.maxUploadBytes)
+            return errJson(Response.Status.PAYLOAD_TOO_LARGE, "Exceeds upload size limit")
+        val overwrite = overwriteFor(session)
+        val parentDocId = resolveOrCreateDir(segs.dropLast(1).joinToString("/"))
+            ?: return errJson(Response.Status.NOT_FOUND, "Target folder not found")
 
-        val qPath = session.parameters["path"]?.firstOrNull()
-            ?: session.parameters["dir"]?.firstOrNull()
-            ?: session.parameters["folder"]?.firstOrNull()
-        val qName = session.parameters["name"]?.firstOrNull()
-            ?: session.parameters["filename"]?.firstOrNull()
-            ?: session.parameters["file"]?.firstOrNull()
+        val partUri = createDoc(parentDocId, newUploadId() + UploadLogic.PART_SUFFIX)
+            ?: return errJson(Response.Status.INTERNAL_ERROR, "Cannot create file")
+        val copy = try { streamIntoPart(partUri, 0L, session.inputStream, declared) }
+                   catch (e: IOException) { deleteDoc(partUri); return errJson(Response.Status.INTERNAL_ERROR, "Write failed (storage full?)") }
+        if (copy.truncated || copy.bytes != declared) {
+            deleteDoc(partUri); return errJson(Response.Status.BAD_REQUEST, "Truncated upload")
+        }
+        session.headers["x-upload-checksum"]?.let {
+            if (!checksumMatches(it, copy.crc)) { deleteDoc(partUri); return errJson(Response.Status.BAD_REQUEST, "Checksum mismatch") }
+        }
+        return completeInto(Upload(parentDocId, name, partUri, declared, overwrite, SystemClock.elapsedRealtime()), copy.bytes, copy.crc)
+    }
 
-        var parentRel = qPath?.trim('/')?.trim() ?: ""
-        var fileName: String? = qName?.trim()?.takeIf { it.isNotEmpty() }
+    // ── Tier B: tus-style resumable create ────────────────────────────────────
+    private fun tusCreate(session: IHTTPSession): Response {
+        val name = headerDecoded(session, "x-upload-name")?.let { UploadLogic.sanitizeFilename(it) }
+            ?: return errJson(Response.Status.BAD_REQUEST, "Missing/invalid X-Upload-Name")
+        val declared = (session.headers["upload-length"] ?: session.headers["content-length"])?.toLongOrNull()
+            ?: return errJson(Response.Status.BAD_REQUEST, "Missing Upload-Length")
+        if (declared < 0) return errJson(Response.Status.BAD_REQUEST, "Bad Upload-Length")
+        if (options.maxUploadBytes > 0 && declared > options.maxUploadBytes)
+            return errJson(Response.Status.PAYLOAD_TOO_LARGE, "Exceeds upload size limit")
+        val dirRel = headerDecoded(session, "x-upload-dir") ?: ""
+        val parentDocId = resolveOrCreateDir(dirRel)
+            ?: return errJson(Response.Status.NOT_FOUND, "Target folder not found")
+        val id = newUploadId()
+        val partUri = createDoc(parentDocId, id + UploadLogic.PART_SUFFIX)
+            ?: return errJson(Response.Status.INTERNAL_ERROR, "Cannot create file")
+        uploads[id] = Upload(parentDocId, name, partUri, declared, overwriteFor(session), SystemClock.elapsedRealtime())
+        return newFixedLengthResponse(Response.Status.CREATED, "text/plain", "").also {
+            it.addHeader("Location", "/api/upload/tus/$id")
+            it.addHeader("Upload-Offset", "0")
+            it.addHeader("Tus-Resumable", "1.0.0")
+            it.addHeader("Cache-Control", "no-store")
+            cors(it)
+        }
+    }
 
-        val segments = uriPath.split('/').filter { it.isNotEmpty() }
-        when {
-            uriPath == "api/upload" || uriPath == "upload" -> { /* query only */ }
-            uriPath.startsWith("api/upload/") || uriPath.startsWith("upload/") -> {
-                val suffix = uriPath.removePrefix("api/upload/").removePrefix("upload/").trim('/')
-                val s = suffix.split('/').filter { it.isNotEmpty() }
-                if (s.isNotEmpty()) {
-                    if (fileName == null) fileName = s.last()
-                    if (s.size > 1 && (qPath == null || qPath.isBlank())) {
-                        parentRel = s.dropLast(1).joinToString("/")
-                    }
+    private fun tusHead(id: String): Response {
+        val up = uploads[id] ?: return errJson(Response.Status.NOT_FOUND, "Unknown upload")
+        val offset = partLength(up.partUri)
+        return newFixedLengthResponse(Response.Status.NO_CONTENT, "text/plain", "").also {
+            it.addHeader("Upload-Offset", offset.toString())
+            it.addHeader("Upload-Length", up.declaredLength.toString())
+            it.addHeader("Tus-Resumable", "1.0.0")
+            it.addHeader("Cache-Control", "no-store")
+            cors(it)
+        }
+    }
+
+    private fun tusPatch(session: IHTTPSession, id: String): Response {
+        val up = uploads[id] ?: return errJson(Response.Status.NOT_FOUND, "Unknown upload")
+        val clientOffset = session.headers["upload-offset"]?.toLongOrNull()
+            ?: return errJson(Response.Status.BAD_REQUEST, "Missing Upload-Offset")
+        val chunkLen = session.headers["content-length"]?.toLongOrNull()
+            ?: return errJson(Response.Status.LENGTH_REQUIRED, "Content-Length required")
+        synchronized(up.lock) {
+            val current = partLength(up.partUri)
+            // Offset must line up with what we actually have — else the client re-HEADs and realigns.
+            if (clientOffset != current) {
+                return newFixedLengthResponse(Response.Status.CONFLICT, "text/plain", "offset mismatch").also {
+                    it.addHeader("Upload-Offset", current.toString()); it.addHeader("Tus-Resumable", "1.0.0"); cors(it)
                 }
             }
-            else -> {
-                if (segments.isNotEmpty()) {
-                    val resolved = runCatching { resolveFast(uriPath) }.getOrNull()
-                    if (resolved != null && resolved.isDirectory) {
-                        if (qPath.isNullOrBlank()) parentRel = uriPath.trim('/')
-                    } else {
-                        if (fileName == null) fileName = segments.last()
-                        val parentSegs = segments.dropLast(1)
-                        if (qPath.isNullOrBlank()) parentRel = parentSegs.joinToString("/")
-                    }
+            if (current + chunkLen > up.declaredLength)
+                return errJson(Response.Status.BAD_REQUEST, "Chunk exceeds declared length")
+            up.lastActivity = SystemClock.elapsedRealtime()
+            val copy = try { streamIntoPart(up.partUri, current, session.inputStream, chunkLen) }
+                       catch (e: IOException) { return errJson(Response.Status.INTERNAL_ERROR, "Write failed (storage full?)") }
+            if (copy.truncated) return errJson(Response.Status.BAD_REQUEST, "Truncated chunk")
+            val newOffset = current + copy.bytes
+            if (newOffset < up.declaredLength) {
+                // More chunks to come.
+                return newFixedLengthResponse(Response.Status.NO_CONTENT, "text/plain", "").also {
+                    it.addHeader("Upload-Offset", newOffset.toString()); it.addHeader("Tus-Resumable", "1.0.0")
+                    it.addHeader("Cache-Control", "no-store"); cors(it)
+                }
+            }
+            // Final chunk landed — verify + atomically publish.
+            val full = partLength(up.partUri)
+            if (full != up.declaredLength) { uploads.remove(id); deleteDoc(up.partUri); return errJson(Response.Status.BAD_REQUEST, "Length mismatch") }
+            uploads.remove(id)
+            return completeInto(up, full, null).also { it.addHeader("Upload-Offset", full.toString()); it.addHeader("Tus-Resumable", "1.0.0") }
+        }
+    }
+
+    private fun tusDelete(id: String): Response {
+        uploads.remove(id)?.let { deleteDoc(it.partUri) }
+        return newFixedLengthResponse(Response.Status.NO_CONTENT, "text/plain", "").also {
+            it.addHeader("Tus-Resumable", "1.0.0"); cors(it)
+        }
+    }
+
+    // ── No-JS fallback: multipart/form-data. This is the ONE path allowed to stage via a temp
+    // file (NanoHTTPD.parseBody) — it is the degraded, JS-off experience, not the fast path. ──
+    private fun multipartUpload(session: IHTTPSession): Response {
+        val dirRel = headerDecoded(session, "x-upload-dir") ?: session.parameters["dir"]?.firstOrNull() ?: ""
+        val parentDocId = resolveOrCreateDir(dirRel)
+            ?: return errJson(Response.Status.NOT_FOUND, "Target folder not found")
+        val files = HashMap<String, String>()
+        try { session.parseBody(files) } catch (e: Exception) { return errJson(Response.Status.BAD_REQUEST, "Bad multipart body") }
+        // parseBody maps each file field → a temp file path; the submitted filename is in parameters.
+        val saved = ArrayList<String>()
+        for ((field, tmpPath) in files) {
+            val submitted = session.parameters[field]?.firstOrNull() ?: continue
+            val name = UploadLogic.sanitizeFilename(submitted) ?: continue
+            val tmp = File(tmpPath)
+            if (!tmp.exists()) continue
+            if (options.maxUploadBytes > 0 && tmp.length() > options.maxUploadBytes) continue
+            val partUri = createDoc(parentDocId, newUploadId() + UploadLogic.PART_SUFFIX) ?: continue
+            val copy = try { FileInputStream(tmp).use { streamIntoPart(partUri, 0L, it, tmp.length()) } }
+                       catch (e: IOException) { deleteDoc(partUri); continue }
+            if (copy.truncated || copy.bytes != tmp.length()) { deleteDoc(partUri); continue }
+            when (val f = finalizePart(Upload(parentDocId, name, partUri, copy.bytes, options.overwritePolicy, 0L))) {
+                is Finalize.Done -> saved.add(f.name)
+                else -> deleteDoc(partUri)
+            }
+        }
+        if (saved.isEmpty()) return errJson(Response.Status.BAD_REQUEST, "No files saved")
+        // JS-off clients just navigated a form; send them back to the folder listing.
+        val back = "/" + dirRel.split('/').filter { it.isNotEmpty() }.joinToString("/") { FileUtils.encodeSeg(it) }
+        return newFixedLengthResponse(Response.Status.REDIRECT_SEE_OTHER, "text/plain", "Uploaded ${saved.size} file(s)").also {
+            it.addHeader("Location", back.ifEmpty { "/" }); cors(it)
+        }
+    }
+
+    // ── Shared completion: verify-free publish of an already-verified .part ──
+    private fun completeInto(up: Upload, bytes: Long, crc: Long?): Response = when (val f = finalizePart(up)) {
+        is Finalize.Done  -> uploadedJson(f.name, bytes, crc)
+        Finalize.Conflict -> { deleteDoc(up.partUri); errJson(Response.Status.CONFLICT, "File already exists") }
+        Finalize.Error    -> { deleteDoc(up.partUri); errJson(Response.Status.INTERNAL_ERROR, "Could not finalize upload") }
+    }
+
+    private sealed class Finalize {
+        data class Done(val name: String) : Finalize()
+        object Conflict : Finalize()
+        object Error : Finalize()
+    }
+
+    // Atomic visibility flip: resolve the final name per policy, then rename the .part onto it.
+    private fun finalizePart(up: Upload): Finalize {
+        val existing = listFast(up.parentDocId).map { it.name }.toSet()
+        val target: String = when (up.overwrite) {
+            OverwritePolicy.SUFFIX    -> UploadLogic.resolveCollision(up.finalName, existing)
+            OverwritePolicy.REJECT    -> if (up.finalName in existing) return Finalize.Conflict else up.finalName
+            OverwritePolicy.OVERWRITE -> {
+                if (up.finalName in existing) {
+                    val victim = listFast(up.parentDocId).firstOrNull { it.name == up.finalName }
+                    if (victim != null) deleteDoc(victim.uri)
+                }
+                up.finalName
+            }
+        }
+        return try {
+            val renamed = DocumentsContract.renameDocument(context.contentResolver, up.partUri, target)
+            DirectoryCache.invalidate(up.parentDocId)
+            if (renamed != null) Finalize.Done(target)
+            else {
+                // Some providers return null yet still rename; re-list to confirm before failing.
+                if (listFast(up.parentDocId).any { it.name == target }) Finalize.Done(target) else Finalize.Error
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "rename .part failed: ${e.message}")
+            DirectoryCache.invalidate(up.parentDocId)
+            Finalize.Error
+        }
+    }
+
+    // Single-pass streaming copy: reads EXACTLY [count] bytes from [input] and writes them into
+    // [partUri] starting at [offset], O(1) memory, folding a CRC32 in as the bytes pass through.
+    // Bounds the read by [count] — never reads to EOF (NanoHTTPD's body stream is shared across
+    // keep-alive requests). fsyncs before returning so a crash can't lose acknowledged bytes.
+    private data class CopyResult(val bytes: Long, val crc: Long, val truncated: Boolean)
+    private fun streamIntoPart(partUri: Uri, offset: Long, input: InputStream, count: Long): CopyResult {
+        val pfd = context.contentResolver.openFileDescriptor(partUri, "rw")
+            ?: throw IOException("cannot open part for write")
+        val fos = FileOutputStream(pfd.fileDescriptor)
+        val buf = ByteArray(256 * 1024)
+        val crc = CRC32()
+        var remaining = count
+        var written = 0L
+        try {
+            if (offset > 0) fos.channel.position(offset)   // resume point for tus PATCH
+            while (remaining > 0) {
+                val toRead = minOf(buf.size.toLong(), remaining).toInt()
+                val n = input.read(buf, 0, toRead)
+                if (n < 0) break                           // body ended early → truncated
+                if (n > 0) { fos.write(buf, 0, n); crc.update(buf, 0, n); remaining -= n; written += n }
+            }
+            fos.flush()
+            try { pfd.fileDescriptor.sync() } catch (_: Exception) {}
+        } finally {
+            try { fos.close() } catch (_: Exception) {}
+            try { pfd.close() } catch (_: Exception) {}
+        }
+        return CopyResult(written, crc.value, truncated = remaining > 0)
+    }
+
+    // Walk (and create missing) directory segments under the root, returning the leaf's docId.
+    // Each segment is sanitised/guarded exactly like a filename — no traversal, no hidden dirs.
+    private fun resolveOrCreateDir(relPath: String): String? {
+        var docId = rootDocId
+        for (rawSeg in relPath.split('/').filter { it.isNotEmpty() }) {
+            if (rawSeg == ".." || rawSeg == "." || (!options.showHidden && FileUtils.isHiddenOrSystem(rawSeg))) return null
+            val seg = UploadLogic.sanitizeFilename(rawSeg) ?: return null
+            val existing = listFast(docId).firstOrNull { it.name == seg }
+            docId = when {
+                existing != null && existing.isDirectory -> existing.docId
+                existing != null                         -> return null   // a file blocks the path
+                else -> {
+                    val uri = try {
+                        DocumentsContract.createDocument(
+                            context.contentResolver,
+                            DocumentsContract.buildDocumentUriUsingTree(rootUri, docId),
+                            DocumentsContract.Document.MIME_TYPE_DIR, seg
+                        )
+                    } catch (_: Exception) { null } ?: return null
+                    DirectoryCache.invalidate(docId)
+                    DocumentsContract.getDocumentId(uri)
                 }
             }
         }
+        return docId
+    }
 
-        if (parentRel.split('/').filter { it.isNotEmpty() }.any { it == ".." || it.any { c -> c < ' ' } })
-            return errJson(Response.Status.FORBIDDEN, "Forbidden")
+    private fun createDoc(parentDocId: String, displayName: String): Uri? = try {
+        DocumentsContract.createDocument(
+            context.contentResolver,
+            DocumentsContract.buildDocumentUriUsingTree(rootUri, parentDocId),
+            "application/octet-stream", displayName
+        ).also { DirectoryCache.invalidate(parentDocId) }
+    } catch (e: Exception) { Log.e(TAG, "createDoc failed: ${e.message}"); null }
 
-        val parentDocId = if (parentRel.isEmpty()) rootDocId
-        else (resolveFast(parentRel)?.takeIf { it.isDirectory }?.docId
-            ?: return errJson(Response.Status.NOT_FOUND, "Directory not found"))
+    private fun deleteDoc(uri: Uri) {
+        try { DocumentsContract.deleteDocument(context.contentResolver, uri) } catch (_: Exception) {}
+    }
 
-        fun safeName(raw: String): String? {
-            val s = raw.substringAfterLast('/').substringAfterLast('\\').trim()
-            if (s.isEmpty() || s == "." || s == "..") return null
-            return s
-        }
+    private fun partLength(uri: Uri): Long =
+        try { context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize.coerceAtLeast(0) } ?: 0L }
+        catch (_: Exception) { 0L }
 
-        val uploaded = mutableListOf<String>()
+    private fun newUploadId(): String {
+        val b = ByteArray(12); uploadIdSeq.nextBytes(b)
+        return Base64.encodeToString(b, Base64.NO_WRAP or Base64.URL_SAFE)
+    }
 
-        val ct = session.headers["content-type"] ?: ""
-        if (ct.contains("multipart/form-data", ignoreCase = true)) {
-            val files = mutableMapOf<String, String>()
-            try { session.parseBody(files) }
-            catch (_: Exception) { return errJson(Response.Status.BAD_REQUEST, "Malformed multipart body") }
+    private fun overwriteFor(session: IHTTPSession): OverwritePolicy =
+        session.headers["x-upload-overwrite"]?.let { OverwritePolicy.from(it) } ?: options.overwritePolicy
 
-            for ((field, tmpPath) in files) {
-                val candidate = if (!qName.isNullOrBlank()) qName!! else (session.parameters["filename"]?.firstOrNull() ?: field)
-                val name = safeName(candidate) ?: continue
-                val mime = FileUtils.getMimeType(name)
-                val targetUri = findOrCreateDoc(parentDocId, name, mime)
-                    ?: return errJson(Response.Status.INTERNAL_ERROR, "Cannot create file")
-                try {
-                    java.io.FileInputStream(tmpPath).use { input ->
-                        context.contentResolver.openOutputStream(targetUri, "w")?.use { out ->
-                            input.copyTo(out)
-                        } ?: return errJson(Response.Status.INTERNAL_ERROR, "Cannot open output")
-                    }
-                } catch (_: Exception) {
-                    return errJson(Response.Status.INTERNAL_ERROR, "Write failed")
-                }
-                try { java.io.File(tmpPath).delete() } catch (_: Exception) {}
-                uploaded.add(name)
-            }
-        } else {
-            val rawName = fileName ?: return errJson(Response.Status.BAD_REQUEST, "Missing file name")
-            val name = safeName(rawName) ?: return errJson(Response.Status.BAD_REQUEST, "Invalid file name")
-            val mime = FileUtils.getMimeType(name)
-            val targetUri = findOrCreateDoc(parentDocId, name, mime)
-                ?: return errJson(Response.Status.INTERNAL_ERROR, "Cannot create file")
-            var written = 0L
-            try {
-                session.inputStream.use { input ->
-                    context.contentResolver.openOutputStream(targetUri, "w")?.use { out ->
-                        val buf = ByteArray(262144)
-                        while (true) {
-                            val toRead = if (contentLength > 0)
-                                minOf(buf.size.toLong(), contentLength - written).toInt() else buf.size
-                            if (contentLength > 0 && toRead <= 0) break
-                            val n = input.read(buf, 0, if (toRead <= 0) buf.size else toRead)
-                            if (n < 0) break
-                            out.write(buf, 0, n)
-                            written += n
-                            if (written > maxBytes) throw java.io.IOException("too large")
-                            if (contentLength > 0 && written >= contentLength) break
-                        }
-                    } ?: return errJson(Response.Status.INTERNAL_ERROR, "Cannot open output")
-                }
-            } catch (e: Exception) {
-                return if (written > maxBytes)
-                    errJson(Response.Status.PAYLOAD_TOO_LARGE, "File too large")
-                else errJson(Response.Status.INTERNAL_ERROR, "Write failed")
-            }
-            uploaded.add(name)
-        }
+    private fun headerDecoded(session: IHTTPSession, key: String): String? =
+        session.headers[key]?.let { try { java.net.URLDecoder.decode(it, "UTF-8") } catch (_: Exception) { it } }
 
-        if (uploaded.isEmpty()) return errJson(Response.Status.BAD_REQUEST, "No file uploaded")
+    // Client may send "crc32:<hex>" (or a bare hex) to have the server reject transport corruption.
+    private fun checksumMatches(header: String, crc: Long): Boolean {
+        val hex = header.substringAfter(':', header).trim().lowercase()
+        val want = hex.toLongOrNull(16) ?: return true   // unparseable → don't reject on our account
+        return want == crc
+    }
 
-        DirectoryCache.invalidate(parentDocId)
+    private fun uploadedJson(name: String, bytes: Long, crc: Long?): Response {
+        val sb = StringBuilder(96)
+        sb.append("{\"ok\":true,\"name\":\"").append(ApiJson.escape(name)).append("\",\"size\":").append(bytes)
+        if (crc != null) sb.append(",\"crc32\":\"").append(crc.toString(16)).append('"')
+        sb.append('}')
+        return newFixedLengthResponse(Response.Status.CREATED, "application/json; charset=utf-8", sb.toString())
+            .also { it.addHeader("Cache-Control", "no-store"); cors(it) }
+    }
 
-        val relPaths = uploaded.map { if (parentRel.isEmpty()) it else "$parentRel/$it" }
-        val sb = StringBuilder()
-        sb.append("{\"ok\":true")
-        if (uploaded.size == 1) {
-            sb.append(",\"name\":\"").append(ApiJson.escape(uploaded[0])).append("\"")
-            sb.append(",\"path\":\"").append(ApiJson.escape(relPaths[0])).append("\"")
-        }
-        sb.append(",\"uploaded\":[")
-        for ((i, n) in uploaded.withIndex()) {
-            if (i > 0) sb.append(',')
-            sb.append('"').append(ApiJson.escape(n)).append('"')
-        }
-        sb.append("]}")
-        return jsonResponse(sb.toString())
+    // Reap resumable sessions abandoned for > TTL, deleting their .part so they don't accumulate.
+    @Volatile private var lastReap = 0L
+    private fun reapStaleUploads() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastReap < 60_000L) return    // at most once a minute
+        lastReap = now
+        val dead = uploads.entries.filter { now - it.value.lastActivity > UPLOAD_IDLE_TTL_MS }
+        for (e in dead) { uploads.remove(e.key); deleteDoc(e.value.partUri) }
     }
 
     private fun findOrCreateDoc(parentDocId: String, fileName: String, mime: String): Uri? {
@@ -1386,8 +1630,21 @@ class HttpServer(
 
     private fun cors(r: Response) {
         r.addHeader("Access-Control-Allow-Origin", "*")
-        r.addHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
-        r.addHeader("Access-Control-Allow-Headers", "Content-Type, Range, Authorization")
+        r.addHeader("Access-Control-Allow-Methods",
+            if (options.allowUploads) "GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE" else "GET, HEAD, OPTIONS")
+        r.addHeader("Access-Control-Allow-Headers",
+            "Content-Type, Range, Authorization, Tus-Resumable, Upload-Length, Upload-Offset, " +
+                "X-Droidserve-CSRF, X-Upload-Name, X-Upload-Dir, X-Upload-Overwrite, X-Upload-Checksum")
+        if (options.allowUploads) r.addHeader("Access-Control-Expose-Headers",
+            "Location, Upload-Offset, Upload-Length, Tus-Resumable, X-Upload-Checksum")
+    }
+
+    // Advertise tus 1.0.0 resumable-upload capabilities on OPTIONS (creation extension).
+    private fun tusDiscovery(r: Response) {
+        r.addHeader("Tus-Resumable", "1.0.0")
+        r.addHeader("Tus-Version", "1.0.0")
+        r.addHeader("Tus-Extension", "creation,termination")
+        if (options.maxUploadBytes > 0) r.addHeader("Tus-Max-Size", options.maxUploadBytes.toString())
     }
 
     private fun errJson(status: Response.Status, msg: String): Response =
@@ -1511,6 +1768,9 @@ class ServerForegroundService : Service() {
         const val EXTRA_TITLE         = "extra_title"
         const val EXTRA_KEEP_AWAKE    = "extra_keep_awake"
         const val EXTRA_AUTO_STOP_MIN = "extra_auto_stop_min"
+        const val EXTRA_ALLOW_UPLOADS = "extra_allow_uploads"
+        const val EXTRA_MAX_UPLOAD_MB = "extra_max_upload_mb"
+        const val EXTRA_OVERWRITE     = "extra_overwrite"
 
         const val PREF_FILE        = "droidserve_prefs"
         private const val KEY_URI  = "server_uri"
@@ -1523,6 +1783,9 @@ class ServerForegroundService : Service() {
         const val KEY_TITLE        = "server_title"
         const val KEY_KEEP_AWAKE   = "server_keep_awake"
         const val KEY_AUTO_STOP    = "server_auto_stop"
+        const val KEY_ALLOW_UPLOADS = "server_allow_uploads"
+        const val KEY_MAX_UPLOAD_MB = "server_max_upload_mb"
+        const val KEY_OVERWRITE     = "server_overwrite"
     }
 
     // All access to httpServer is guarded by `lock`; `stopped` guards against a start that
@@ -1583,7 +1846,10 @@ class ServerForegroundService : Service() {
                         showHidden    = intent.getBooleanExtra(EXTRA_SHOW_HIDDEN, false),
                         allowZip      = intent.getBooleanExtra(EXTRA_ALLOW_ZIP, true),
                         allowDownload = intent.getBooleanExtra(EXTRA_ALLOW_DL, true),
-                        title         = intent.getStringExtra(EXTRA_TITLE)?.ifBlank { null } ?: "DroidServe"
+                        title         = intent.getStringExtra(EXTRA_TITLE)?.ifBlank { null } ?: "DroidServe",
+                        allowUploads  = intent.getBooleanExtra(EXTRA_ALLOW_UPLOADS, false),
+                        maxUploadBytes = intent.getIntExtra(EXTRA_MAX_UPLOAD_MB, 0).toLong() * 1024L * 1024L,
+                        overwritePolicy = OverwritePolicy.from(intent.getStringExtra(EXTRA_OVERWRITE))
                     )
                 )
                 saveConfig(cfg)
@@ -1854,6 +2120,9 @@ class ServerForegroundService : Service() {
             .putString(KEY_TITLE, cfg.options.title)
             .putBoolean(KEY_KEEP_AWAKE, cfg.keepAwake)
             .putInt(KEY_AUTO_STOP, cfg.autoStopMinutes)
+            .putBoolean(KEY_ALLOW_UPLOADS, cfg.options.allowUploads)
+            .putInt(KEY_MAX_UPLOAD_MB, (cfg.options.maxUploadBytes / (1024L * 1024L)).toInt())
+            .putString(KEY_OVERWRITE, cfg.options.overwritePolicy.name.lowercase())
             .apply()
     }
 
@@ -1870,7 +2139,10 @@ class ServerForegroundService : Service() {
                 showHidden    = p.getBoolean(KEY_SHOW_HIDDEN, false),
                 allowZip      = p.getBoolean(KEY_ALLOW_ZIP, true),
                 allowDownload = p.getBoolean(KEY_ALLOW_DL, true),
-                title         = p.getString(KEY_TITLE, "DroidServe")?.ifBlank { "DroidServe" } ?: "DroidServe"
+                title         = p.getString(KEY_TITLE, "DroidServe")?.ifBlank { "DroidServe" } ?: "DroidServe",
+                allowUploads  = p.getBoolean(KEY_ALLOW_UPLOADS, false),
+                maxUploadBytes = p.getInt(KEY_MAX_UPLOAD_MB, 0).toLong() * 1024L * 1024L,
+                overwritePolicy = OverwritePolicy.from(p.getString(KEY_OVERWRITE, null))
             )
         )
     }
